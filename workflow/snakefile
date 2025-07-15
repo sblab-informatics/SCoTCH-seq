@@ -7,3 +7,622 @@ rule all:
     input:
         "data/reconstruct_CpG_states/mESC-7cycles_S1_lanes_merged_CpG_state_quants.tsv",
         "data/reconstruct_CpG_states/mESC-7cycles_S1_lanes_merged_spliceABCD_merged.tsv"
+
+rule run_fastqc_raw:
+    input:
+        "input/raw_fastq/{sample}.fastq.gz"
+    output:
+        html_report="reports/fastqc/{sample}_fastqc.html",
+        zip_report="reports/fastqc/{sample}_fastqc.zip"
+    conda:
+        "envs/snakemake_doubleshot.yml"
+    shell:
+        """
+        fastqc {input} > {output}
+        """
+
+rule initial_clip_filter_read1:
+    input:
+        "input/raw_fastq/{sample}_R1_001.fastq.gz"
+    output:
+        temporary("data/filtered_fastq/{sample}_R1_001.filt.fastq.gz")
+    conda:
+        "envs/snakemake_doubleshot.yml"
+    params:
+        threads=CUTADAPT_THREADS
+    shell:
+        """
+        cutadapt -j {params.threads} -u 5 {input} | cutadapt -j {params.threads} --discard-trimmed -g 'XAGTYTGYTAYGGTTYTAYGTAGYAGAYT;o=12' - | \
+        cutadapt -j {params.threads} --discard-trimmed -g 'XAATGAYGATGYGTTYGAGYATYGTYATT;o=12' - | \
+        cutadapt -j {params.threads} --discard-trimmed -a 'AGATCGGAAGAGCACACGTCTGAACTCCAGTCA;o=6' - -o {output}
+        """
+
+rule initial_clip_filter_read2:
+    input:
+        "input/raw_fastq/{sample}_R2_001.fastq.gz"
+    output:
+        temporary("data/filtered_fastq/{sample}_R2_001.filt.fastq.gz")
+    conda:
+        "envs/snakemake_doubleshot.yml"
+    params:
+        threads=CUTADAPT_THREADS
+    shell:
+        """
+        cutadapt -j {params.threads} -u 5 {input} | \
+        cutadapt -j {params.threads} --discard-trimmed -a 'AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT;o=6' - -o {output}
+        """
+
+rule run_seqkit_pair_lane1:
+    input:
+        "data/filtered_fastq/{sample}_L001_R1_001.filt.fastq.gz",
+        "data/filtered_fastq/{sample}_L001_R2_001.filt.fastq.gz"
+    output:
+        temporary("data/paired_filtered_fastq/{sample}_L001_R1_001.filt.fastq.gz"),
+        temporary("data/paired_filtered_fastq/{sample}_L001_R2_001.filt.fastq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        """
+        seqkit pair -1 {input[0]} -2 {input[1]} -O data/paired_filtered_fastq/
+        """
+
+rule run_seqkit_pair_lane2:
+    input:
+        "data/filtered_fastq/{sample}_L002_R1_001.filt.fastq.gz",
+        "data/filtered_fastq/{sample}_L002_R2_001.filt.fastq.gz"
+    output:
+        temporary("data/paired_filtered_fastq/{sample}_L002_R1_001.filt.fastq.gz"),
+        temporary("data/paired_filtered_fastq/{sample}_L002_R2_001.filt.fastq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        """
+        seqkit pair -1 {input[0]} -2 {input[1]} -O data/paired_filtered_fastq/
+        """
+
+# Splice and quality trim
+rule extract_spliceA:
+    input:
+        "data/paired_filtered_fastq/{sample}_R1_001.filt.fastq.gz"
+    output:
+        temporary("data/splices/{sample}.spliceA.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot.yml"
+    params:
+        threads=CUTADAPT_THREADS
+    shell:
+        """
+        cutadapt -j {params.threads} --discard-untrimmed -a 'AGTYTGYTAYGGTTYTAYGTAGYAGAYT;o=20' {input} | \
+        cutadapt -j {params.threads} -u -5 -l 100 - | cutadapt -j {params.threads} --nextseq-trim=20 - -o {output}
+        """
+
+rule extract_spliceB:
+    input:
+        "data/paired_filtered_fastq/{sample}_R1_001.filt.fastq.gz"
+    output:
+        temporary("data/splices/{sample}.spliceB.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot.yml"
+    params:
+        threads=CUTADAPT_THREADS
+    shell:
+        """
+        cutadapt -j {params.threads} --discard-untrimmed -a 'AGTYTGYTAYGGTTYTAYGTAGYAGAYT;o=20'...AATGAYGATGYGTTYGAGYATYGTYATT {input} | \
+        cutadapt -j {params.threads} -u 5 -u -5 -l 100 - | cutadapt -j {params.threads} --nextseq-trim=20 - -o {output}
+        """
+
+rule extract_spliceC:
+    input:
+        "data/paired_filtered_fastq/{sample}_R2_001.filt.fastq.gz"
+    output:
+        temporary("data/splices/{sample}.spliceC.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot.yml"
+    params:
+        threads=CUTADAPT_THREADS
+    shell:
+        """
+        cutadapt -j {params.threads} --discard-untrimmed -a 'ARTCTRCTACRRTTCTACRTARCARACT;o=20'...AATRACRATRCTCRAACRCATCRTCATT {input} | \
+        cutadapt -j {params.threads} -u 5 -u -5 -l 100 - | cutadapt -j {params.threads} --nextseq-trim=20 - -o {output}
+        """
+
+rule extract_spliceD:
+    input:
+        "data/paired_filtered_fastq/{sample}_R2_001.filt.fastq.gz"
+    output:
+        temporary("data/splices/{sample}.spliceD.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot.yml"
+    params:
+        threads=CUTADAPT_THREADS
+    shell:
+        """
+        cutadapt -j {params.threads} --discard-untrimmed -a 'ARTCTRCTACRRTTCTACRTARCARACT;o=20' {input} | cutadapt -j {params.threads} -u -5 -l 100 - | \
+        cutadapt -j {params.threads} --nextseq-trim=20 - -o {output}
+        """
+
+rule pair_splicesAC_lane1:
+    input:
+        "data/splices/{sample}L001.spliceA.fq.gz",
+        "data/splices/{sample}L001.spliceC.fq.gz"
+    output:
+        temporary("data/splices_paired/{sample}L001.spliceA.fq.gz"),
+        temporary("data/splices_paired/{sample}L001.spliceC.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_paired/" 
+
+rule pair_splicesAC_lane2:
+    input:
+        "data/splices/{sample}L002.spliceA.fq.gz",
+        "data/splices/{sample}L002.spliceC.fq.gz"
+    output:
+        temporary("data/splices_paired/{sample}L002.spliceA.fq.gz"),
+        temporary("data/splices_paired/{sample}L002.spliceC.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_paired/" 
+
+rule pair_splicesBD_lane1:
+    input:
+        "data/splices/{sample}L001.spliceB.fq.gz",
+        "data/splices/{sample}L001.spliceD.fq.gz"
+    output:
+        temporary("data/splices_paired/{sample}L001.spliceB.fq.gz"),
+        temporary("data/splices_paired/{sample}L001.spliceD.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_paired/"
+
+rule pair_splicesBD_lane2:
+    input:
+        "data/splices/{sample}L002.spliceB.fq.gz",
+        "data/splices/{sample}L002.spliceD.fq.gz"
+    output:
+        temporary("data/splices_paired/{sample}L002.spliceB.fq.gz"),
+        temporary("data/splices_paired/{sample}L002.spliceD.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_paired/"
+
+rule cleanup_splices:
+    input:
+        "data/splices_paired/{sample}.fq.gz"
+    output:
+        temporary("data/splices_paired_cleanup/{sample}.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        "seqkit sana {input} -o {output}"
+
+
+rule pair_clean_splicesAD_lane1:
+    input:
+        "data/splices_paired_cleanup/{sample}L001.spliceA.fq.gz",
+        "data/splices_paired_cleanup/{sample}L001.spliceD.fq.gz"
+    output:
+        temporary("data/splices_final/{sample}L001.spliceA.fq.gz"),
+        temporary("data/splices_final/{sample}L001.spliceD.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_final/"
+
+rule pair_clean_splicesAD_lane2:
+    input:
+        "data/splices_paired_cleanup/{sample}L002.spliceA.fq.gz",
+        "data/splices_paired_cleanup/{sample}L002.spliceD.fq.gz"
+    output:
+        temporary("data/splices_final/{sample}L002.spliceA.fq.gz"),
+        temporary("data/splices_final/{sample}L002.spliceD.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_final/"
+
+
+rule pair_clean_splicesBC_lane1:
+    input:
+        "data/splices_paired_cleanup/{sample}L001.spliceB.fq.gz",
+        "data/splices_paired_cleanup/{sample}L001.spliceC.fq.gz"
+    output:
+        temporary("data/splices_final/{sample}L001.spliceB.fq.gz"),
+        temporary("data/splices_final/{sample}L001.spliceC.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_final/"
+
+rule pair_clean_splicesBC_lane2:
+    input:
+        "data/splices_paired_cleanup/{sample}L002.spliceB.fq.gz",
+        "data/splices_paired_cleanup/{sample}L002.spliceC.fq.gz"
+    output:
+        temporary("data/splices_final/{sample}L002.spliceB.fq.gz"),
+        temporary("data/splices_final/{sample}L002.spliceC.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_final/"
+
+
+rule cleanup_paired_splices:
+    input:
+        "data/splices_final/{splice}.fq.gz"
+    output:
+        temporary("data/splices_final_clean/{splice}.fq.gz")
+    conda:
+        "envs/snakemake_doubleshot_seqkit.yml"
+    shell:
+        "seqkit sana {input} -o {output}"
+
+# Note that the renaming step is included because bsbolt automatically appends output file with ".bam", which otherwise causes downstream issues with snakemake.
+rule align_splicesAD_lane1:
+    input:
+        "data/splices_final_clean/{sample}L001.spliceA.fq.gz",
+        "data/splices_final_clean/{sample}L001.spliceD.fq.gz"
+    output:
+        temporary("data/splices_aligned/{sample}L001.splicesAD.bam")
+    params:
+        ref_genome=PATH_TO_REFERENCE_GENOME
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        conda activate base
+        bsbolt Align -F1 {input[0]} -F2 {input[1]} -DB {params.ref_genome} -O data/splices_aligned/temp.L001.splicesAD -t 20 -OT 20
+        samtools sort data/splices_aligned/temp.L001.splicesAD.bam -o {output}
+        rm data/splices_aligned/temp.L001.splicesAD.bam
+        """
+
+rule align_splicesAD_lane2:
+    input:
+        "data/splices_final_clean/{sample}L002.spliceA.fq.gz",
+        "data/splices_final_clean/{sample}L002.spliceD.fq.gz"
+    output:
+        temporary("data/splices_aligned/{sample}L002.splicesAD.bam")
+    params:
+        ref_genome=PATH_TO_REFERENCE_GENOME
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        conda activate base
+        bsbolt Align -F1 {input[0]} -F2 {input[1]} -DB {params.ref_genome} -O data/splices_aligned/temp.L002.splicesAD -t 20 -OT 20
+        samtools sort data/splices_aligned/temp.L002.splicesAD.bam -o {output}
+        rm data/splices_aligned/temp.L002.splicesAD.bam
+        """
+
+rule align_splicesBC_lane1:
+    input:
+        "data/splices_final_clean/{sample}L001.spliceB.fq.gz",
+        "data/splices_final_clean/{sample}L001.spliceC.fq.gz"
+    output:
+        temporary("data/splices_aligned/{sample}L001.splicesBC.bam")
+    params:
+        ref_genome=PATH_TO_REFERENCE_GENOME
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        conda activate base
+        bsbolt Align -F1 {input[0]} -F2 {input[1]} -DB {params.ref_genome} -O data/splices_aligned/temp.L001.splicesBC -t 20 -OT 20
+        samtools sort data/splices_aligned/temp.L001.splicesBC.bam -o {output}
+        rm data/splices_aligned/temp.L001.splicesBC.bam
+        """
+
+rule align_splicesBC_lane2:
+    input:
+        "data/splices_final_clean/{sample}L002.spliceB.fq.gz",
+        "data/splices_final_clean/{sample}L002.spliceC.fq.gz"
+    output:
+        temporary("data/splices_aligned/{sample}L002.splicesBC.bam")
+    params:
+        ref_genome=PATH_TO_REFERENCE_GENOME
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        conda activate base
+        bsbolt Align -F1 {input[0]} -F2 {input[1]} -DB {params.ref_genome} -O data/splices_aligned/temp.L002.splicesBC -t 20 -OT 20
+        samtools sort data/splices_aligned/temp.L002.splicesBC.bam -o {output}
+        rm data/splices_aligned/temp.L002.splicesBC.bam
+        """
+
+rule merge_index_splicesAD:
+    input:
+        "data/splices_aligned/{sample}L001.splicesAD.bam",
+        "data/splices_aligned/{sample}L002.splicesAD.bam"
+    output:
+        temporary("data/splices_aligned_sorted_merged/{sample}lanes_merged.splicesAD.bam")
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        conda activate base
+        samtools merge {input[0]} {input[1]} -o {output}
+        samtools index {output}
+        """
+
+rule merge_index_splicesBC:
+    input:
+        "data/splices_aligned/{sample}L001.splicesBC.bam",
+        "data/splices_aligned/{sample}L002.splicesBC.bam"
+    output:
+        "data/splices_aligned_sorted_merged/{sample}lanes_merged.splicesBC.bam"
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        conda activate base 
+        samtools merge {input[0]} {input[1]} -o {output}
+        samtools index {output}
+        """
+
+# Isolate mESC reads then deduplicate
+rule isolate_dedup_mESC_reads_splicesAD:
+    input:
+        "data/splices_aligned_sorted_merged/{sample}.splicesAD.bam"
+    output:
+        "data/splices_aligned_sorted_merged/{sample}.splicesAD.idxstats.txt",
+        temporary("data/splicesAD_mESC_dedup/{sample}.splicesAD.mESC.bam"),
+        temporary("data/splicesAD_mESC_dedup/{sample}.splicesAD.mESC.dedup.bam"),
+        "data/splicesAD_mESC_dedup/{sample}.splicesAD.mESC.dedup_metrics.txt",
+        "data/splicesAD_mESC_dedup/{sample}.splicesAD.mESC.dedup_idxstats.txt"
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        RG=$(basename {input} .bam)
+        samtools idxstats {input} > {output[0]}
+        cut -f 1 {output[0]} | grep -vE 'H1|H2|SQC|SQ4mC|SQ2hmC|HMCPv2|pUC19|Lambda' | xargs samtools view -1 -b {input} | \
+        samtools addreplacerg -r ID:$RG -r SM:Sample1 -o {output[1]} -
+        picard MarkDuplicates --REMOVE_DUPLICATES --VALIDATION_STRINGENCY LENIENT --SORTING_COLLECTION_SIZE_RATIO 0.125 \
+        -I {output[1]} -M {output[3]} -O {output[2]}
+        samtools idxstats {output[2]} > {output[4]}
+        """
+
+# Isolate pUC19/Lambda reads then deduplicate
+rule isolate_dedup_pUC19Lambda_reads_splicesAD:
+    input:
+        "data/splices_aligned_sorted_merged/{sample}.splicesAD.bam",
+        "data/splices_aligned_sorted_merged/{sample}.splicesAD.idxstats.txt"
+    output:
+        temporary("data/splicesAD_pUC19Lambda_dedup/{sample}.splicesAD.pUC19Lambda.bam"),
+        temporary("data/splicesAD_pUC19Lambda_dedup/{sample}.splicesAD.pUC19Lambda.dedup.bam"),
+        "data/splicesAD_pUC19Lambda_dedup/{sample}.splicesAD.pUC19Lambda.dedup_metrics.txt",
+        "data/splicesAD_pUC19Lambda_dedup/{sample}.splicesAD.pUC19Lambda.dedup_idxstats.txt"
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        RG=$(basename {input[0]} .bam)
+        cut -f 1 {input[1]} | grep -E 'pUC19|Lambda' | xargs samtools view -1 -b {input[0]} | \
+        samtools addreplacerg -r ID:$RG -r SM:Sample1 -o {output[0]} -
+        picard MarkDuplicates --REMOVE_DUPLICATES --VALIDATION_STRINGENCY LENIENT --SORTING_COLLECTION_SIZE_RATIO 0.125 \
+        -I {output[0]} -M {output[2]} -O {output[1]}
+        samtools idxstats {output[1]} > {output[3]}
+        """
+
+rule isolate_synthspikein_reads_splicesAD:
+    input:
+        "data/splices_aligned_sorted_merged/{sample}.splicesAD.bam",
+        "data/splices_aligned_sorted_merged/{sample}.splicesAD.idxstats.txt"
+    output:
+        temporary("data/splicesAD_synthspikein/{sample}.splicesAD.synthspikein.bam")
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        cut -f 1 {input[1]} | grep -E 'H1|H2|SQC|SQ4mC|SQ2hmC' | xargs samtools view -1 -b {input[0]} > {output}
+        """
+
+rule merge_deduplicated_data:
+    input:
+        "data/splicesAD_mESC_dedup/{sample}.splicesAD.mESC.bam",
+        "data/splicesAD_pUC19Lambda_dedup/{sample}.splicesAD.pUC19Lambda.dedup.bam",
+        "data/splicesAD_synthspikein/{sample}.splicesAD.synthspikein.bam"
+    output:
+        "data/splicesAD_dedup_all/{sample}.splicesAD.dedup.all.bam",
+        "data/splicesAD_dedup_all/{sample}.splicesAD.dedup.all_coverage.txt"
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        samtools merge {input[0]} {input[1]} {input[2]} -o {output[0]}
+        samtools coverage -m {output[0]} > {output[1]}
+        """
+
+rule split_paired_bams_spliceA:
+    input:
+        "data/splicesAD_dedup_all/{sample}.splicesAD.dedup.all.bam"
+    output:
+        temporary("data/bam_splices/{sample}.SpliceA.bam"),
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        bamtools filter -isFirstMate true -in {input} -out {output}
+        """
+
+rule split_paired_bams_spliceD:
+    input:
+        "data/splicesAD_dedup_all/{sample}.splicesAD.dedup.all.bam"
+    output:
+        temporary("data/bam_splices/{sample}.SpliceD.bam"),
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        bamtools filter -isSecondMate true -in {input} -out {output}
+        """
+
+rule split_paired_bams_spliceB:
+    input:
+        "data/splices_aligned_sorted_merged/{sample}.splicesBC.bam"
+    output:
+        temporary("data/bam_splices/{sample}.SpliceB.bam"),
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        bamtools filter -isFirstMate true -in {input} -out {output}
+        """
+
+rule split_paired_bams_spliceC:
+    input:
+        "data/splices_aligned_sorted_merged/{sample}.splicesBC.bam"
+    output:
+        temporary("data/bam_splices/{sample}.SpliceC.bam"),
+    conda:
+        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+    shell:
+        """
+        bamtools filter -isSecondMate true -in {input} -out {output}
+        """
+
+rule bsbolt2bismark_spliceA_OT:
+    input:
+        "workflow/scripts/bsbolt2bismark/spliceA.sh",
+        "data/bam_splices/{sample}.SpliceA.bam"
+    output:
+        temporary("data/splices_bsbolt2bismark/{sample}.SpliceA_OT.txt")
+    conda:
+        "envs/python.yml"
+    shell:
+        """
+        {input[0]} {input[1]}
+        mv SpliceA_OT.txt {output}
+        rm SpliceA_OT_tmp.txt OT_SpliceA.bam
+        """
+
+rule bsbolt2bismark_spliceA_OB:
+    input:
+        "workflow/scripts/bsbolt2bismark/spliceA_c.sh",
+        "data/bam_splices/{sample}.SpliceA.bam"
+    output:
+        temporary("data/splices_bsbolt2bismark/{sample}.SpliceA_OB.txt")
+    conda:
+        "envs/python.yml"
+    shell:
+        """
+        {input[0]} {input[1]}
+        mv SpliceA_OB.txt {output}
+        rm SpliceA_OB_tmp.txt OB_SpliceA.bam
+        """
+
+rule bsbolt2bismark_spliceB_OT:
+    input:
+        "workflow/scripts/bsbolt2bismark/spliceB.sh",
+        "data/bam_splices/{sample}.SpliceB.bam"
+    output:
+        temporary("data/splices_bsbolt2bismark/{sample}.SpliceB_OT.txt")
+    conda:
+        "envs/python.yml"
+    shell:
+        """
+        {input[0]} {input[1]}
+        mv SpliceB_OT.txt {output}
+        rm SpliceB_OT_tmp.txt OT_SpliceB.bam
+        """
+
+rule bsbolt2bismark_spliceB_OB:
+    input:
+        "workflow/scripts/bsbolt2bismark/spliceB_c.sh",
+        "data/bam_splices/{sample}.SpliceB.bam"
+    output:
+        temporary("data/splices_bsbolt2bismark/{sample}.SpliceB_OB.txt")
+    conda:
+        "envs/python.yml"
+    shell:
+        """
+        {input[0]} {input[1]}
+        mv SpliceB_OB.txt {output}
+        rm SpliceB_OB_tmp.txt OB_SpliceB.bam
+        """
+
+rule bsbolt2bismark_spliceC_CTOT:
+    input:
+        "workflow/scripts/bsbolt2bismark/spliceC.sh",
+        "data/bam_splices/{sample}.SpliceC.bam"
+    output:
+        temporary("data/splices_bsbolt2bismark/{sample}.SpliceC_CTOT.txt")
+    conda:
+        "envs/python.yml"
+    shell:
+        """
+        {input[0]} {input[1]}
+        mv SpliceC_CTOT.txt {output}
+        rm SpliceC_CTOT_tmp.txt CTOT_SpliceC.bam
+        """
+
+rule bsbolt2bismark_spliceC_CTOB:
+    input:
+        "workflow/scripts/bsbolt2bismark/spliceC_c.sh",
+        "data/bam_splices/{sample}.SpliceC.bam"
+    output:
+        temporary("data/splices_bsbolt2bismark/{sample}.SpliceC_CTOB.txt")
+    conda:
+        "envs/python.yml"
+    shell:
+        """
+        {input[0]} {input[1]}
+        mv SpliceC_CTOB.txt {output}
+        rm SpliceC_CTOB_tmp.txt CTOB_SpliceC.bam
+        """
+
+rule bsbolt2bismark_spliceD_CTOT:
+    input:
+        "workflow/scripts/bsbolt2bismark/spliceD.sh",
+        "data/bam_splices/{sample}.SpliceD.bam"
+    output:
+        temporary("data/splices_bsbolt2bismark/{sample}.SpliceD_CTOT.txt")
+    conda:
+        "envs/python.yml"
+    shell:
+        """
+        {input[0]} {input[1]}
+        mv SpliceD_CTOT.txt {output}
+        rm SpliceD_CTOT_tmp.txt CTOT_SpliceD.bam
+        """
+
+rule bsbolt2bismark_spliceD_CTOB:
+    input:
+        "workflow/scripts/bsbolt2bismark/spliceD_c.sh",
+        "data/bam_splices/{sample}.SpliceD.bam"
+    output:
+        temporary("data/splices_bsbolt2bismark/{sample}.SpliceD_CTOB.txt")
+    conda:
+        "envs/python.yml"
+    shell:
+        """
+        {input[0]} {input[1]}
+        mv SpliceD_CTOB.txt {output}
+        rm SpliceD_CTOB_tmp.txt CTOB_SpliceD.bam
+        """
+
+rule reconstruct_CpG_states:
+    input:
+        "workflow/scripts/reconstruct_CpG_states/reconstruct_CpG_states.r",
+        "data/splices_bsbolt2bismark/{sample}.SpliceA_OT.txt",
+        "data/splices_bsbolt2bismark/{sample}.SpliceA_OB.txt",
+        "data/splices_bsbolt2bismark/{sample}.SpliceB_OT.txt",
+        "data/splices_bsbolt2bismark/{sample}.SpliceB_OB.txt",
+        "data/splices_bsbolt2bismark/{sample}.SpliceC_CTOT.txt",
+        "data/splices_bsbolt2bismark/{sample}.SpliceC_CTOB.txt",
+        "data/splices_bsbolt2bismark/{sample}.SpliceD_CTOT.txt",
+        "data/splices_bsbolt2bismark/{sample}.SpliceD_CTOB.txt"
+
+    output:
+        "data/reconstruct_CpG_states/{sample}_CpG_state_quants.tsv",
+        "data/reconstruct_CpG_states/{sample}_spliceABCD_merged.tsv"
+    conda:
+        "envs/R.yml"
+    shell:
+        """
+        Rscript {input[0]}
+        """
