@@ -1,0 +1,92 @@
+The pipeline has been configured to run on a slurm-based cluster.
+
+
+Hardware / Software Requirements
+---------------------------------
+	•	OS Requirements
+	     The codes have been tested on Linux: x86_64 GNU/Linux
+
+	•	Install Snakemake version 7.3.8
+		(in a conda environment named "snakemake-slurm") 
+
+	•	Conda environments
+		Install the following conda environments using the .yml files (< 1 hour)
+		
+		workflow/envs/python.yml
+		workflow/envs/R.yml
+		workflow/envs/snakemake_doubleshot_bsbolt_sambam.yml
+		workflow/envs/snakemake_doubleshot_seqkit.yml
+		workflow/envs/snakemake_doubleshot.yml
+        slurm/config.yaml
+	
+	•	Index generation for bsbolt (BiSulfite Bolt) version
+	     Generate alignment index for mm10 using the "WGBS Index Generation" method	    
+
+
+
+Running the pipeline
+----------------------
+
+To configure pipeline, edit the snakefile (./workflow/snakefile) with the following info:
+
+1. Specify config file
+   Default (for use with slurm cluster):
+   configfile: "slurm/config.yaml"
+   If running locally, change to:
+   configfile: "local/config.yaml"
+
+2. Specify path to reference genome (generated using the bsbolt aligner):
+   PATH_TO_REFERENCE_GENOME="<path_to_reference_genome>"
+
+3. Specify number of threads used by cutadapt:
+   e.g. CUTADAPT_THREADS=15
+
+4. Specify final output filenames:
+
+rule all:
+    input:
+        "data/reconstruct_CpG_states/<filename_wildcard>_lanes_merged_CpG_state_quants.tsv",
+        "data/reconstruct_CpG_states/<filename_wildcard>_lanes_merged_spliceABCD_merged.tsv"
+
+   Note that <filename_wildcard> should match the filename prefix of input fastq files (./input/raw_fastq)
+   e.g. for the fastq file mESC-7cycles_S1_L001_R2_001.fastq.gz, it should be "mESC-7cycles_S1"
+
+5. Run the pipeline, e.g.:
+	sbatch --mem=1G --wrap "bash run_snakemake_pipeline.sh"
+
+
+Expected output
+----------------------
+The following output is expected within the “data" directory:
+
+./reconstruct_CpG_states:
+mESC-7cycles_S1_lanes_merged_CpG_state_quants.tsv
+mESC-7cycles_S1_lanes_merged_spliceABCD_merged.tsv
+
+./splicesAD_dedup_all:
+mESC-7cycles_S1_lanes_merged.splicesAD.dedup.all.bam
+mESC-7cycles_S1_lanes_merged.splicesAD.dedup.all_coverage.txt
+
+./splicesAD_mESC_dedup:
+mESC-7cycles_S1_lanes_merged.splicesAD.mESC.dedup_idxstats.txt
+mESC-7cycles_S1_lanes_merged.splicesAD.mESC.dedup_metrics.txt
+
+./splicesAD_pUC19Lambda_dedup:
+mESC-7cycles_S1_lanes_merged.splicesAD.pUC19Lambda.dedup_idxstats.txt
+mESC-7cycles_S1_lanes_merged.splicesAD.pUC19Lambda.dedup_metrics.txt
+
+./splices_aligned_sorted_merged:
+mESC-7cycles_S1_lanes_merged.splicesAD.bam.bai
+mESC-7cycles_S1_lanes_merged.splicesAD.idxstats.txt
+mESC-7cycles_S1_lanes_merged.splicesBC.bam
+mESC-7cycles_S1_lanes_merged.splicesBC.bam.bai
+
+
+Expected runtime
+-----------------
+The expected runtime for the test data is ~20 minutes on a cluster, and on a ‘normal’ desktop computer it is ~36 hours (note that this excludes indexing the reference genome).
+
+Reproduction instructions
+---------------------------
+Replace the demo input files with the raw fastq files (available from GSE263772) for each individual replicate to generate the output files: <replicate>_lanes_merged_CpG_state_quants.tsv
+These are used as the input by the downstream R markdown scripts. 
