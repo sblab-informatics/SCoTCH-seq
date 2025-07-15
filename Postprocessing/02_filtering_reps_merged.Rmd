@@ -5,7 +5,7 @@ date: "2024-03-25"
 output: html_document
 ---
 
-# DoubleShot: filtering and binning, and generation of bed, bedgraph and bigwig files
+# SCoTCH-seq: filtering and binning, and generation of bed, bedgraph and bigwig files
 
 The following script takes the output from the processing pipeline of both replicates (`./data/pipeline_output/CpG_state_quants_*`) and does the following:
 * Removes spike-ins and unwanted chromosomes (e.g. ChrM, chrUn_*)
