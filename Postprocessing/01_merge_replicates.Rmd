@@ -1,6 +1,6 @@
 ---
 title: "1_merge_replicates.rmd"
-author: "Jack Hardwick"
+author: "Jack Hardwick, Somdutta Dhir, Angela Simeone"
 date: "2024-03-19"
 output: html_document
 ---
