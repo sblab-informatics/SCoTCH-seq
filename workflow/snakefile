@@ -1,0 +1,9 @@
+configfile: "slurm/config.yaml"
+
+PATH_TO_REFERENCE_GENOME="/scratcha/sblab/hardwi01/reference_genomes/mm10_spiked_bsbolt"
+CUTADAPT_THREADS=15
+
+rule all:
+    input:
+        "data/reconstruct_CpG_states/mESC-7cycles_S1_lanes_merged_CpG_state_quants.tsv",
+        "data/reconstruct_CpG_states/mESC-7cycles_S1_lanes_merged_spliceABCD_merged.tsv"
