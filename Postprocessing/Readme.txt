@@ -5,7 +5,7 @@ Note:
 * The file 'config.txt' should be updated with the appropriate paths.
 
 The input of the 1st script is the output of the processing pipeline performed on each replicate.
-These files are found in the directory 'pipeline_output_snakemake' and are named:
+These files are found in the directory 'data/reconstruct_CpG_states' and are named:
 * mESC-7cycles_S1_lanes_merged_CpG_state_quants.tsv (Rep 1, 'JSH9')
 * CEG1654-MT01-I1528-001_S1_lanes_merged_CpG_state_quants.tsv (Rep 2, 'JSH11')
 
