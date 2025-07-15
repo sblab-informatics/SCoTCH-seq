@@ -1,0 +1,659 @@
+---
+title: "enhancers"
+author: "Jack Hardwick"
+date: "2023-12-06"
+output: html_document
+---
+
+# The following script performs the enhancer analysis, including:
+* Average levels of CpG states at poised, primed, and active enhancers
+* Profiles of CpG states at the above enhancer types
+* Plots of the above
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+hmC_states <- c("HC+CH", "HM+MH", "HH")
+non_hmC_states <- c("CC", "MM", "MC+CM")
+
+# Load config file storing paths and experiment-specific variables
+## Read config file where paths are defined
+config <- read.table("config.txt", 
+                     sep="=", 
+                     comment.char="#", 
+                     col.names=c("key", "value"))
+
+## Convert contents to individual variables
+config_list <- as.list(setNames(config$value, config$key)) %>%
+  list2env(envir = .GlobalEnv)
+```
+
+### Obtaining coordinates for enhancers (primed, poised, and active)
+
+The Excel file containing the enhancer coordinates: 
+`./data/misc_files/1-s2.0-S1934590917300371-mmc2.xls` 
+was downloaded from https://doi.org/10.1016/j.stem.2017.02.004.
+
+# Loading enhancer coordinates
+```{r}
+fn_enhancers <- function(enh_type, sheet_no, output_filename){
+data <- readxl::read_excel(paste0(misc_files, "1-s2.0-S1934590917300371-mmc2.xls"),
+                     sheet = sheet_no,
+                     col_types = "text")
+sorted_data <- data[order(data$Chr, data$Start, data$End), ] %>%
+  mutate(enh_type = enh_type) %>%
+    write_tsv(paste0(misc_files, output_filename), col_names = FALSE)
+}
+
+# Split bivalent genes by Dppa2/4 status into separate bed files
+active_enh <- fn_enhancers("active", 1, "active_enh.sorted.bed")
+primed_enh <- fn_enhancers("primed", 2, "primed_enh.sorted.bed")
+poised_enh <- fn_enhancers("poised", 3, "poised_enh.sorted.bed")
+
+# Concatenate enhancer files, sort, and write to file
+all_enh <- rbind(active_enh, primed_enh, poised_enh)
+all_enh <- all_enh[order(all_enh$Chr, all_enh$Start, all_enh$End), ] %>%
+  write_tsv(paste0(misc_files,
+                   "all_enh.bed"), col_names = FALSE)
+```
+
+### Calculate mean lengths of active, primed, and poised enhancers
+```{r}
+# Load coords of all enhancers
+all_enh <- read_tsv(paste0(misc_files, 
+                           "all_enh.bed"), col_names = FALSE)
+
+# Calculate length of each enhancer
+all_enh_length <- all_enh %>%
+  mutate(enh_length = X3 - X2) %>%
+  group_by(X4) %>%
+  reframe(mean_enh_length = mean(enh_length),
+          median_enh_length = median(enh_length))
+
+```
+### Determine coordinates of CpG sites that overlap with all enhancers
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+source config.txt
+mkdir -p $enh_output
+
+# Combine enhancer coordinates into a single file and sort
+cat ${misc_files}*_enh.sorted.bed | bedtools sort -i stdin > ${misc_files}all_enh.bed
+
+# Find all CpG sites in both replicates that overlap with all enhancers
+bedtools intersect -a ${misc_files}all_enh.bed -b ${intermed_files}quants_e14_5x_blacklist_filt_CpG_coords.bed -wa -wb > ${enh_output}enhancer_CpG_site_overlap_merged_reps.bed
+
+```
+
+### Shuffle enhancer files to compare enhancer data with random intervals
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+source config.txt
+
+cd $enh_output
+
+# Taking bins from replicate 1 (i.e. features in shuffled bed file must occur in regions covered by sequencing data). The choice of CC is arbitrary, as bed coordinates are the same for all binned CpG state files. Specifying seed integer enables shuffling to be exactly reproduced.
+for file in ${misc_files}*_enh.sorted.bed; do
+  bedtools shuffle -seed 927442958 -incl ${binned_data}bedgraph_merged/CC_quants_e14_filt_binned_all_chr.bedgraph -i $file -g ${misc_files}mm10.chrom.sizes.chr1_19XY.sorted > ${file%%.sorted.bed}_merged_reps_shuffle.bed
+done
+
+# Combine shuffled enhancer coordinates into a single files by replicate and sort
+cat ${misc_files}*_merged_reps_shuffle.bed | bedtools sort -i stdin > ./all_enh_shuffle.merged_reps.bed
+
+# Find all CpG sites in merged replicates that overlap with all enhancers
+bedtools intersect -a ./all_enh_shuffle.merged_reps.bed -b ${intermed_files}quants_e14_5x_blacklist_filt_CpG_coords.bed -wa -wb > ./enhancer_shuffle_CpG_site_overlap.merged_reps.bed
+```
+
+### Determine average level of CpG states across each enhancer (also for grouped CpG states) and write to file
+```{r}
+# Import CpG site coordinates intersecting with all enhancer peaks
+enh_CpG_overlap <-
+  read_tsv(paste0(enh_output,
+                  "enhancer_CpG_site_overlap_merged_reps.bed"),
+           col_names = FALSE) %>% distinct()
+
+# Import shuffled peaks
+enh_shuffle_CpG_overlap <-
+  read_tsv(paste0(enh_output,
+                  "enhancer_shuffle_CpG_site_overlap.merged_reps.bed"),
+           col_names = FALSE) %>% distinct()
+
+# Name columns of shuffled peak files
+colnames(enh_shuffle_CpG_overlap) <-
+  c("feature_chr",
+    "feature_start",
+    "feature_end",
+    "enh_type",
+    "Chr",
+    "start",
+    "end")
+
+# Label enhancer type with shuffle
+enh_shuffle_CpG_overlap$enh_type <-
+  paste0(enh_shuffle_CpG_overlap$enh_type, "_shuffled")
+
+# Create column with unique feature ID for shuffled data
+enh_shuffle_CpG_overlap <-
+  enh_shuffle_CpG_overlap %>%
+  mutate(feature_ID = paste0(enh_type,
+                             sep = "_",
+                             feature_chr, sep = "_", feature_start))
+
+# Name columns for enhancer peaks
+colnames(enh_CpG_overlap) <-
+  c("feature_chr",
+    "feature_start",
+    "feature_end",
+    "enh_type",
+    "Chr",
+    "start",
+    "end")
+
+# Create column with unique feature ID for enhancer peaks
+enh_CpG_overlap <-
+  enh_CpG_overlap %>%
+  mutate(feature_ID = paste0(enh_type,
+                             sep = "_",
+                             feature_chr,
+                             sep = "_",
+                             feature_start))
+
+# Import CpG-state info
+CpG_states <-
+  read_tsv(file = paste0(intermed_files, 
+                         "quants_e14_5x_blacklist_filt.bed")) %>%
+  tibble()
+
+# Get CpG-state levels for CpG sites that overlap with enhancers
+CpG_states_enh_overlap <- inner_join(CpG_states, enh_CpG_overlap)
+
+# Get CpG-state levels for CpG sites that overlap with shuffled enhancers
+CpG_states_enh_shuffle_overlap <-
+  inner_join(CpG_states,
+             enh_shuffle_CpG_overlap,
+             by = join_by(Chr, start, end))
+
+# Merge enhancer and shuffled data
+CpG_states_enh_overlap <-
+  rbind(CpG_states_enh_overlap, CpG_states_enh_shuffle_overlap)
+
+# Remove unneeded data from memory
+rm(CpG_states)
+
+# Count number of CpG sites covered per enhancer in each replicate
+CpG_states_enh_overlap_CpG_count <-
+  CpG_states_enh_overlap %>%
+  group_by(Chr, enh_type, feature_start, feature_end, feature_ID) %>%
+  summarise(CpG_count = n_distinct(CpG_ID))
+
+# Merge CpG count with df
+CpG_states_enh_overlap <-
+  left_join(CpG_states_enh_overlap,
+            CpG_states_enh_overlap_CpG_count,
+            by = join_by("Chr",
+                         "feature_start",
+                         "feature_end",
+                         "enh_type",
+                         "feature_ID"))
+
+# Calculate mean pct of each CpG state across each enhancer
+# and add zero to missing values (i.e. set mean level to 0
+# where no CpG states were not detected within the enhancer).
+CpG_states_enh_overlap_mean <- CpG_states_enh_overlap %>%
+  group_by(Chr,
+           enh_type,
+           feature_start,
+           feature_end,
+           feature_ID,
+           CpG_count,
+           CpG_State) %>%
+  reframe(mean_CpG_state_level = sum(pct) / CpG_count) %>%
+  distinct() %>%
+  complete(feature_ID, CpG_State, fill = list(mean_CpG_state_level = 0)) %>%
+  distinct() %>%
+  group_by(feature_ID) %>%
+  fill(Chr,
+       enh_type,
+       feature_start,
+       feature_end,
+       CpG_count,
+       .direction = "downup")
+
+# Identify enhancers that do not contain a single covered CpG site
+enhancer_covered <- CpG_states_enh_overlap_mean %>%
+  group_by(feature_ID) %>%
+  reframe(covered = as.logical(sum(mean_CpG_state_level))) %>%
+  filter(covered == FALSE)
+
+# Remove these non-covered enhancers from main df
+CpG_states_enh_overlap_mean <-
+  anti_join(CpG_states_enh_overlap_mean, enhancer_covered)
+
+# Group corresponding asymmetric CpG states together
+# (i.e. HC + CH, HM + MH, MC + CM)
+# and calculate combined mean level across each enhancer:
+
+## 1. Create new column 'CpG_state_group' for grouped asymmetric states
+CpG_states_enh_overlap_mean <- CpG_states_enh_overlap_mean %>%
+  mutate(CpG_state_group = case_when(CpG_State == "HC" |
+                                       CpG_State == "CH" ~ "HC+CH",
+                                     CpG_State == "HM" |
+                                       CpG_State == "MH" ~ "HM+MH",
+                                     CpG_State == "MC" |
+                                       CpG_State == "CM" ~ "MC+CM",
+                                     TRUE ~ CpG_State, ))
+
+# Calculate sum of levels of grouped asymmetric states
+CpG_states_enh_overlap_mean_grouped <-
+  CpG_states_enh_overlap_mean %>%
+  group_by(feature_ID,
+           enh_type,
+           CpG_count,
+           CpG_state_group) %>%
+  reframe(grouped_CpG_state_level = sum(mean_CpG_state_level))
+
+# Write to file
+CpG_states_enh_overlap_mean %>%
+  write_tsv(paste0(enh_output,
+                   "CpG_states_enh_overlap_by_CpG_state_reps_merged.tsv"))
+CpG_states_enh_overlap_mean_grouped %>%
+  write_tsv(paste0(enh_output,
+                   "CpG_states_enh_overlap_by_CpG_group_reps_merged.tsv"))
+
+# Compute summary stats for grouped CpG state
+# levels for each enhancer type and write to file
+CpG_states_enh_overlap_mean_grouped_summary_stats <-
+  CpG_states_enh_overlap_mean_grouped %>%
+  group_by(enh_type, CpG_state_group) %>%
+  reframe(median = median(grouped_CpG_state_level),
+          mean = mean(grouped_CpG_state_level))
+
+# Compute summary stats for total hmC levels
+# for each enhancer type and write to file
+CpG_states_enh_overlap_total_hmC_summary_stats <-
+  CpG_states_enh_overlap_mean_grouped %>%
+  filter(CpG_state_group %in% hmC_states) %>%
+  group_by(feature_ID) %>%
+  mutate(total_hmC = sum(grouped_CpG_state_level)) %>%
+  group_by(enh_type) %>%
+  reframe(median_total_hmC = median(total_hmC),
+          mean_total_hmC = mean(total_hmC))
+```
+
+### Plotting CpG state levels across enhancers
+```{r}
+# Import data
+CpG_states_enh_overlap_mean <-
+  read_tsv(paste0(enh_output,
+                  "CpG_states_enh_overlap_by_CpG_state_reps_merged.tsv"))
+CpG_states_enh_overlap_mean_grouped <-
+  read_tsv(paste0(enh_output,
+                  "CpG_states_enh_overlap_by_CpG_group_reps_merged.tsv"))
+
+hmC_colours <- c("#3b528b", "#21908c", "#8fcfe0")
+
+# Restructuring data for plot
+CpG_states_enh_overlap_mean_grouped_restruct <-
+  CpG_states_enh_overlap_mean_grouped %>%
+  mutate(enh_type_shuffled = case_when(grepl("shuffle", enh_type) ~ "shuffled",
+                                       TRUE ~ "true"))
+
+CpG_states_enh_overlap_mean_grouped_restruct <-
+  CpG_states_enh_overlap_mean_grouped_restruct %>%
+  mutate(enh_type_full = case_when(grepl("active", enh_type) ~ "active",
+                                   grepl("primed", enh_type) ~ "primed",
+                                   grepl("poised", enh_type) ~ "poised"))
+
+# Specify colours for plotting
+enh_shuffle_colours <- RColorBrewer::brewer.pal(9, "Blues")[c(6, 4)]
+
+# Plot grouped hmC states at enhancers (without shuffled comparison)
+plot_grouped_hmC_enhancers <-
+  CpG_states_enh_overlap_mean_grouped %>%
+  filter(enh_type == "active" | enh_type == "poised" | enh_type == "primed") %>%
+  filter(CpG_state_group %in% hmC_states) %>%
+  ggplot(aes(x = factor(CpG_state_group,
+                        levels = c("HC+CH", "HM+MH", "HH")),
+             y = grouped_CpG_state_level,
+             fill = factor(CpG_state_group,
+                           levels = c("HC+CH", "HM+MH", "HH")))) +
+  stat_boxplot(geom = "errorbar",
+               position = position_dodge(0.9),
+               width = 0.15) +
+  geom_violin(size = 0.1,
+              width = 0.5,
+              linewidth = 0,
+              position = position_dodge(0.9),
+              scale = "width") +
+  geom_boxplot(width = 0.5,
+               alpha = 0.3,
+               outlier.shape = NA,
+               position = position_dodge(0.9),
+               fill = "white") +
+  coord_cartesian(ylim = c(0, 16)) +
+  ggtitle("Levels of hmC states at enhancers (merged replicates)") +
+  scale_fill_manual(values = hmC_colours) +
+  scale_y_continuous(breaks = seq(0, 16, by = 2),
+                     expand = c(0, 0)) +
+  ylab("CpG-state level (%)") +
+  xlab("CpG State") +
+  facet_grid(~ factor(enh_type, levels = c("active", "primed", "poised"))) +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        axis.line = element_line(linewidth = 0.4),
+        axis.ticks = element_line(size = 0.4),
+        axis.ticks.length = unit(0.1, "cm")) +
+  guides(fill = guide_legend(title = ""))
+
+ggsave(filename = paste0(enh_output, "plot_grouped_hmC_enhancers.pdf"), 
+       plot = plot_grouped_hmC_enhancers,
+       width = 6,
+       height = 4.5)
+
+# Plot grouped hmC states at enhancers and shuffled
+plot_grouped_hmC_enh_shuffled <-
+  CpG_states_enh_overlap_mean_grouped_restruct %>%
+  filter(CpG_state_group %in% hmC_states) %>%
+  ggplot(aes(x = factor(CpG_state_group,
+                        levels = c("HC+CH", "HM+MH", "HH")),
+             y = grouped_CpG_state_level,
+             fill = factor(enh_type_shuffled,
+                           levels = c("true", "shuffled")))) +
+  stat_boxplot(geom = "errorbar",
+               position = position_dodge(0.9),
+               width = 0.15) +
+  geom_violin(size = 0.1,
+              linewidth = 0,
+              position = position_dodge(0.9),
+              scale = "width") +
+  geom_boxplot(width = 0.5, alpha = 0.3,
+               outlier.shape = NA,
+               position = position_dodge(0.9)) +
+  coord_cartesian(ylim = c(0, 15)) +
+  ggtitle("Levels of hmC states at enhancers by replicate") +
+  scale_fill_manual(values = enh_shuffle_colours) +
+  scale_y_continuous(breaks = seq(0, 16, by = 2),
+                     expand = c(0, 0)) +
+  ylab("CpG-state level (%)") +
+  xlab("CpG State") +
+  facet_grid(~ enh_type_full) +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        axis.line = element_line(linewidth = 0.4),
+        axis.ticks = element_line(size = 0.4),
+        axis.ticks.length = unit(.1, "cm")) +
+  guides(fill = guide_legend(title = ""))
+plot_grouped_hmC_enh_shuffled
+ggsave(filename = paste0(enh_output, "plot_grouped_hmC_enh_shuffled.pdf"), 
+       plot = plot_grouped_hmC_enh_shuffled,
+       width = 6,
+       height = 4.5)
+
+non_hmC_state_levels_enh_plot <- 
+  CpG_states_enh_overlap_mean_grouped_restruct %>%
+  filter(CpG_state_group %in% non_hmC_states) %>%
+  ggplot(aes(x = factor(CpG_state_group, levels = c("CC", "MM", "MC+CM")),
+             y = grouped_CpG_state_level,
+             fill = factor(enh_type_shuffled,
+                           levels = c("true", "shuffled")))) +
+  stat_boxplot(geom = "errorbar",
+               position = position_dodge(0.9),
+               width = 0.15) +
+  geom_violin(size = 0.1,
+              linewidth = 0,
+              position = position_dodge(0.9),
+              scale = "width") +
+  geom_boxplot(width = 0.5,
+               alpha = 0.3,
+               outlier.shape = NA,
+               position = position_dodge(0.9)) +
+  ggtitle("Levels of CC, MM, and MC/CM at enhancers (merged replicates)") +
+  ylab("CpG-state level (%)") +
+  xlab("CpG State") +
+  facet_grid(~ enh_type_full) +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        axis.line = element_line(linewidth = 0.4),
+        axis.ticks = element_line(size = 0.4),
+        axis.ticks.length = unit(0.1, "cm")) +
+  scale_fill_manual(values = enh_shuffle_colours) +
+  scale_y_continuous(breaks = seq(0, 100, by = 10),
+                     expand = c(0, 0)) +
+  guides(fill = guide_legend(title = ""))
+
+ggsave(filename = paste0(enh_output, "non_hmC_state_levels_enh_plot.pdf"), 
+       plot = non_hmC_state_levels_enh_plot,
+       width = 6,
+       height = 4.5)
+
+
+# Count number of enhancers in each group used for the plots 
+# (i.e. those enhancers with CpG sites overlapping seq data)
+fn_enh_count <- function(data, enh_group){
+  data %>%
+    filter(enh_type == enh_group) %>%
+    dplyr::select(feature_ID) %>%
+    unique() %>%
+    nrow()
+}
+
+n_active_enh <- fn_enh_count(CpG_states_enh_overlap_mean_grouped, "active")
+n_primed_enh <- fn_enh_count(CpG_states_enh_overlap_mean_grouped, "primed")
+n_poised_enh <- fn_enh_count(CpG_states_enh_overlap_mean_grouped, "poised")
+
+n_all_enh <- data.frame(n_active_enh, n_primed_enh, n_poised_enh) %>%
+  write_tsv(file = paste0(enh_output,
+                          "n_all_enh.tsv"))
+
+```
+
+# Total hmC at enhancers
+```{r}
+# Calculate total hmC per enhancer
+CpG_states_enh_overlap_mean_grouped_total_hmC <-
+  CpG_states_enh_overlap_mean_grouped_restruct %>%
+  filter(CpG_state_group %in% hmC_states) %>%
+  group_by(feature_ID, enh_type_shuffled, enh_type_full, CpG_count) %>%
+  reframe(total_pct_hmC = sum(grouped_CpG_state_level))
+
+# Plot total hmC across enhancers (true & shuffled)
+plot_total_hmC_enhancers <-
+  CpG_states_enh_overlap_mean_grouped_total_hmC %>%
+  ggplot(aes(x = factor(enh_type_full,
+                        levels = c("active", "primed", "poised")),
+             y = total_pct_hmC,
+             fill = factor(enh_type_shuffled,
+                           levels = c("true", "shuffled")))) +
+  stat_boxplot(geom = "errorbar",
+               position = position_dodge(0.9),
+               width = 0.15) +
+  geom_violin(size = 0.1,
+              width = 0.5,
+              linewidth = 0,
+              position = position_dodge(0.9),
+              scale = "width") +
+  geom_boxplot(width = 0.5,
+               alpha = 0.3,
+               outlier.shape = NA,
+               position = position_dodge(0.9)) +
+  coord_cartesian(ylim = c(0, 28)) +
+  scale_y_continuous(breaks = seq(0, 35, by = 5),
+                     expand = c(0, 0)) +
+  ggtitle("Levels of total hmC states at enhancers (merged replicates)") +
+#  scale_fill_manual(values = enh_colours) +
+  #  facet_grid(~ enh_type_full) +
+  ylab("CpG-state level (%)") +
+  xlab("CpG State") +
+  theme_minimal() +
+  theme(panel.grid.minor = element_blank(),
+        axis.line = element_line(linewidth = 0.4),
+        axis.ticks = element_line(size = 0.4),
+        axis.ticks.length = unit(0.1, "cm")) +
+  guides(fill = guide_legend(title = ""))
+
+ggsave(filename = paste0(enh_output, "plot_total_hmC_enhancers.pdf"), 
+       plot = plot_total_hmC_enhancers,
+       width = 6,
+       height = 4.5)
+
+```
+
+# Profiles of CpG states at enhancers
+## First, prepare enhancer files, determining the centre of each enhancer
+```{r}
+# Load single bed file containing coordinates of all enhancer coordinates
+all_enh <- read_tsv(paste0(misc_files,
+                           "all_enh.bed"), col_names = FALSE)
+
+# Determine midpoint of each enhancers, rounding up to nearest integer
+all_enh_midpoints <- all_enh %>%
+  mutate(start = ceiling(X2 + (X3 - X2) / 2), end = start + 1)
+
+all_enh_midpoints %>%
+  select(X1, start, end, X4) %>%
+  write_tsv(paste0(misc_files, 
+                   "all_enh_midpoints.bed"), col_names = FALSE)
+
+# Split by enhancer type and write to file
+all_enh_midpoints %>%
+  filter(X4 == "active") %>%
+  select(X1, start, end) %>%
+  write_tsv(paste0(misc_files,
+                   "active_enh_midpoints.bed"), col_names = FALSE)
+```
+
+## Split file containing enhancer midpoints by enhancer type then determine CpG-state profiles at each enhancer type using DeepTools
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+source config.txt
+
+# Split by enhancer type
+cd $misc_files
+awk -F'\t' '{print > ("./" $4 "_enh_midpoints.bed")}' "all_enh_midpoints.bed" 
+```
+
+## Compute matrices for CpG states in DeepTools
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+source config.txt
+
+# Create directories for deeptools matrices & plots
+mkdir -p ${enh_output}deeptools_matrices_merged_reps/ \
+    ${enh_output}deeptools_plots_merged_reps/
+
+cd ${binned_data}bigwig_merged
+
+# Primed enhancers: compute matrix for all states
+for file in *.bw; do
+  computeMatrix reference-point -p 8 \
+  --referencePoint center \
+  -S $file \
+  -R ${misc_files}primed_enh_midpoints.bed \
+  --upstream 8000 --downstream 8000 \
+  --skipZeros \
+  -o ${enh_output}deeptools_matrices_merged_reps/${file%%.bw}.primed_enh.mat.gz
+done
+
+# Active enhancers: compute matrix for all states
+for file in *.bw; do
+  computeMatrix reference-point -p 8 \
+  --referencePoint center \
+  -S $file \
+  -R ${misc_files}active_enh_midpoints.bed \
+  --upstream 8000 --downstream 8000 \
+  --skipZeros \
+  -o ${enh_output}deeptools_matrices_merged_reps/${file%%.bw}.active_enh.mat.gz
+done
+
+# Poised enhancers: compute matrix for all states
+for file in *.bw; do
+  computeMatrix reference-point -p 8 \
+  --referencePoint center \
+  -S $file \
+  -R ${misc_files}poised_enh_midpoints.bed \
+  --upstream 8000 --downstream 8000 \
+  --skipZeros \
+  -o ${enh_output}deeptools_matrices_merged_reps/${file%%.bw}.poised_enh.mat.gz
+done
+```
+
+## Label matrices with file prefixes (needed for combining multiple states onto individual plots)
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+source config.txt
+
+cd ${enh_output}deeptools_matrices_merged_reps
+
+for file in *enh.mat.gz; do
+  computeMatrixOperations relabel \
+  -m $file \
+  -o ${file%%.mat.gz}.relabel.mat.gz \
+  --groupLabels ${file%%_binned*}
+done
+
+```
+
+## Merge hmC matrices by replicate so that multiple CpG states can be combined on single plot
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+source config.txt
+
+cd ${enh_output}deeptools_matrices_merged_reps
+
+# Primed enhancers, all hmC
+computeMatrixOperations rbind -m H*.grouped.primed_enh.relabel.mat.gz HH*.primed_enh.relabel.mat.gz -o hmC_primed_enh.merged_reps.mat.gz
+
+# Primed enhancers, other states
+computeMatrixOperations rbind -m MC*.grouped.primed_enh.relabel.mat.gz MM*.primed_enh.relabel.mat.gz CC*.primed_enh.relabel.mat.gz -o C_mC_primed_enh.merged_reps.mat.gz
+
+# Active enhancers, all hmC
+computeMatrixOperations rbind -m H*.grouped.active_enh.relabel.mat.gz HH*.active_enh.relabel.mat.gz -o hmC_active_enh.merged_reps.mat.gz
+
+# Active enhancers, other states
+computeMatrixOperations rbind -m MC*.grouped.active_enh.relabel.mat.gz MM*.active_enh.relabel.mat.gz CC*.active_enh.relabel.mat.gz -o C_mC_active_enh.merged_reps.mat.gz
+
+# Poised enhancers, all hmC
+computeMatrixOperations rbind -m H*.grouped.poised_enh.relabel.mat.gz HH*.poised_enh.relabel.mat.gz -o hmC_poised_enh.merged_reps.mat.gz
+
+# Poised enhancers, other states, rep 1
+computeMatrixOperations rbind -m MC*.grouped.poised_enh.relabel.mat.gz MM*.poised_enh.relabel.mat.gz CC*.poised_enh.relabel.mat.gz -o C_mC_poised_enh.merged_reps.mat.gz
+```
+
+## Plot peak profiles in DeepTools
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+source config.txt
+
+# Primed enhancer plot
+cd ${enh_output}deeptools_matrices_merged_reps
+for file in hmC_*_enh.merged_reps.mat.gz; do
+  plotProfile -m $file \
+              -out ../deeptools_plots_merged_reps/${file%.mat.gz}.pdf \
+              --numPlotsPerRow 1 \
+              --refPointLabel enh.center \
+              --yMax 9 \
+              --yMin 0 \
+              --plotWidth 6 \
+              --plotHeight 10 \
+              --plotTitle "Mod levels at enhancers (CpG-res)";
+done
+
+for file in C_mC_*_enh.merged_reps.mat.gz; do
+  plotProfile -m $file \
+              -out ../deeptools_plots_merged_reps/${file%.mat.gz}.pdf \
+              --numPlotsPerRow 1 \
+              --refPointLabel enh.center \
+              --yMax 90 \
+              --yMin 0 \
+              --plotWidth 6 \
+              --plotHeight 10 \
+              --plotTitle "Mod levels at enhancers (CpG-res)";
+done
+```
+

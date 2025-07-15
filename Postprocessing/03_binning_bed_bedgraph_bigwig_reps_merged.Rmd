@@ -1,0 +1,187 @@
+---
+title: "filtering_binning_bed_bedgraph_bigwig"
+author: "Jack Hardwick"
+output: html_document
+date: "2024-01-05"
+---
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+# Load config file storing paths and experiment-specific variables
+## Read config file where paths are defined
+config <- read.table("config.txt", 
+                     sep="=", 
+                     comment.char="#", 
+                     col.names=c("key", "value"))
+
+## Convert contents to individual variables
+config_list <- as.list(setNames(config$value, config$key)) %>%
+  list2env(envir = .GlobalEnv)
+```
+
+# Create output folder for binned data
+```{bash}
+source config.txt
+mkdir -p $binned_data
+```
+
+# Bin data (200-bp bin size)
+## Note that this is done iteratively for subsets of chromosomes to avoid exhausting laptop memory.
+```{r}
+# Define chromosome subsets
+chr_1_3 <- c("chr1", "chr2", "chr3")
+chr_4_6 <- c("chr4", "chr5", "chr6")
+chr_7_9 <- c("chr7", "chr8", "chr9")
+chr_10_12 <- c("chr10", "chr11", "chr12")
+chr_13_15 <- c("chr13", "chr14", "chr15")
+chr_16_19 <- c("chr16", "chr17", "chr18", "chr19")
+chr_XY <- c("chrX", "chrY")
+
+# Define chromosome subset used in each iteration (e.g. chr_XY).
+# TO BE CHANGED EACH TIME, ALONG WITH OUTPUT FILENAME AT END OF CHUNK
+chr_list <- chr_XY
+
+# Import data filtered for chromosomes, errors, and blacklisted sites
+quants_e14_5x_blacklist_filt <-
+  read_tsv(paste0(intermed_files,
+                  "quants_e14_5x_blacklist_filt.bed")) %>%
+  filter(Chr %in% chr_list)
+
+# Get min and max start coord limits
+quants_e14_5x_blacklist_filt %>% group_by(Chr)
+min_start <- min(quants_e14_5x_blacklist_filt$start)
+max_start <- max(quants_e14_5x_blacklist_filt$start)
+
+# Bin genomic coordinates as factor called 'genomic_bin'
+quants_e14_5x_blacklist_filt <- quants_e14_5x_blacklist_filt %>%
+  mutate(genomic_bin = cut(start,
+                           breaks = seq(min_start, max_start, by = 200),
+                           dig.lab = 50,
+                           include.lowest = TRUE))
+
+# Calculate pct modification per bin for each CpG state:
+# a) determine no. of CpG sites per bin and omit rows with NA
+quants_e14_5x_blacklist_filt_unique_CpG <-
+  quants_e14_5x_blacklist_filt %>%
+  group_by(Chr, genomic_bin) %>%
+  summarise(CpGs_per_bin = n_distinct(start)) %>%
+  na.omit()
+
+# b) merge CpG-per-bin count with data
+quants_e14_5x_blacklist_filt <-
+  left_join(quants_e14_5x_blacklist_filt,
+            quants_e14_5x_blacklist_filt_unique_CpG,
+            by = c("Chr", "genomic_bin"))
+
+# c) determine mean levels of CpG states per bin
+quants_e14_5x_blacklist_filt_binned <-
+  quants_e14_5x_blacklist_filt %>%
+  group_by(Chr, genomic_bin, CpG_State) %>%
+  reframe(mean_CpG_state_level_binned = sum(pct) / CpGs_per_bin) %>%
+  distinct()
+
+# Add zero pct values for missing states and
+# categorise bins by whether they contain any CpG sites
+quants_e14_5x_blacklist_filt_binned <-
+  quants_e14_5x_blacklist_filt_binned %>%
+  complete(Chr, genomic_bin, CpG_State,
+           fill = list(mean_CpG_state_level_binned = 0))
+
+# Merge CpG-site count per bin with data
+quants_e14_5x_blacklist_filt_binned <-
+  inner_join(quants_e14_5x_blacklist_filt_binned,
+             quants_e14_5x_blacklist_filt_unique_CpG,
+             by = c("Chr", "genomic_bin"))
+
+# Extract lower and upper bounds and store them in new columns
+quants_e14_5x_blacklist_filt_binned$start <-
+  as.numeric(str_extract(quants_e14_5x_blacklist_filt_binned$genomic_bin,
+                         "\\d+"))
+quants_e14_5x_blacklist_filt_binned$end <-
+  as.numeric(str_extract(quants_e14_5x_blacklist_filt_binned$genomic_bin,
+                         "(?<=,)\\d+"))
+
+# Group corresponding asymmetric CpG states (e.g. HC and CH = HC/CH)
+quants_e14_5x_blacklist_filt_binned <-
+  quants_e14_5x_blacklist_filt_binned %>%
+  mutate(CpG_state_group = case_when(
+    (CpG_State == "HC" | CpG_State == "CH") ~ "HC/CH",
+    (CpG_State == "HM" | CpG_State == "MH") ~ "HM/MH",
+    (CpG_State == "MC" | CpG_State == "CM") ~ "MC/CM",
+    TRUE ~ CpG_State
+  ))
+
+# Determine binned level of grouped CpG states
+quants_e14_5x_blacklist_filt_binned_grouped <-
+  quants_e14_5x_blacklist_filt_binned %>%
+  group_by(Chr, genomic_bin, CpG_state_group) %>%
+  reframe(mean_CpG_group_level_binned = sum(mean_CpG_state_level_binned))
+
+# Merge with main df
+quants_e14_5x_blacklist_filt_binned <-
+  full_join(quants_e14_5x_blacklist_filt_binned,
+            quants_e14_5x_blacklist_filt_binned_grouped,
+            by = c("Chr", "genomic_bin", "CpG_state_group"))
+
+# Write to disk
+# CHANGE OUTPUT FILENAME TO REFLECT CHROMOSOME SUBSET
+quants_e14_5x_blacklist_filt_binned %>%
+  write_tsv(paste0(binned_data, 
+                   "quants_e14_filt_binned_chrXY.bed"),
+            col_names = FALSE)
+```
+
+### Binned data: combine all chromosomes and split by CpG state, then generate bedgraph/bigwigs
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+source config.txt
+
+cd $binned_data
+
+# Combine all chromosomes
+cat quants_e14_filt_binned_*.bed > quants_e14_filt_binned_all_chr.bed
+
+# Split by CpG state 
+for file in quants_e14_filt_binned_all_chr.bed; do
+awk -F'\t' '{print > ("./" $3 "_'$file'")}' "$file"
+done
+
+# Generate sorted bedgraph files for individual CpG states, selecting columns and placing in following order: (1) chr, (2) bin start, (3) bin end, (4) percentage modification across bin
+for file in ??_quants_e14_filt_binned_all_chr.bed; do
+  awk 'BEGIN{OFS="\t"} {print $1, $6, $7, $4}' "$file" | bedtools sort -i - > "${file%%.bed}.bedgraph"
+done
+
+# Generate sorted bedgraph files for grouped, asymmetric CpG states, selecting columns and placing in following order: (1) chr, (2) bin start, (3) bin end, (4) grouped percentage modification across bin
+for file in HC*bed HM*bed MC*bed; do
+  awk 'BEGIN{OFS="\t"} {print $1, $6, $7, $9}' "$file" | bedtools sort -i - > "${file%%.bed}.grouped.bedgraph"
+done
+
+# Remove unwanted input files
+#rm rep?_binned_all_chr.bed
+
+# Generate bigwigs from bedgraphs
+for file in *.bedgraph; do
+  bedGraphToBigWig $file ../misc_files/mm10.chrom.sizes.chr1_19XY.sorted ${file%%.bedgraph}.bw
+done
+```
+
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+source config.txt
+
+cd $binned_data
+  
+# Tidy up
+mkdir -p ./bed_merged ./bedgraph_merged ./bigwig_merged
+mv *.bw ./bigwig_merged
+mv *.bedgraph ./bedgraph_merged
+mv *binned*bed ./bed_merged
+
+# Remove input files
+#rm both_reps_binned*
+```

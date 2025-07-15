@@ -1,0 +1,47 @@
+# Define paths here (read by both R and bash scripts)
+
+##################
+# REPLICATE INFO #
+##################
+
+# Path to replicate 1 quants
+path_quants_rep1="/Users/jhardwick/Desktop/reps_merged_review/data/pipeline_output_snakemake/"
+
+# Path to replicate 2 quants
+path_quants_rep2="/Users/jhardwick/Desktop/reps_merged_review/data/pipeline_output_snakemake/"
+
+# Set replicate names
+rep1="mESC-7cycles_S1_lanes_merged_CpG_state_quants.tsv"
+rep2="CEG1654-MT01-I1528-001_S1_lanes_merged_CpG_state_quants.tsv"
+
+# Define shorthand for each replicate
+rep1_sh="JSH9"
+rep2_sh="JSH11"
+
+##########################
+# PATHS FOR INPUT/OUTPUT #
+##########################
+
+# Misc files:
+misc_files="/Users/jhardwick/Desktop/reps_merged_review/data/misc_files/"
+
+# Intermediate files (intermediate files generated during analysis):
+intermed_files="/Users/jhardwick/Desktop/reps_merged_review/data/intermediate_files/"
+
+# Binned data:
+binned_data="/Users/jhardwick/Desktop/reps_merged_review/data/binned_data/"
+
+# Global analysis output:
+global_output="/Users/jhardwick/Desktop/reps_merged_review/data/global_analysis_output/"
+
+# Call-rate matrix output:
+call_rate_output="/Users/jhardwick/Desktop/reps_merged_review/data/call_rate_matrix_output/"
+
+# Enhancer output:
+enh_output="/Users/jhardwick/Desktop/reps_merged_review/data/enhancer_output/"
+
+# Transcription output:
+transcript_output="/Users/jhardwick/Desktop/reps_merged_review/data/transcription_output/"
+
+# Dppa output:
+dppa_output="/Users/jhardwick/Desktop/reps_merged_review/data/dppa_output/"

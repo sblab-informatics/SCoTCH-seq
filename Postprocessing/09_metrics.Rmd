@@ -1,0 +1,88 @@
+---
+title: "09_metrics"
+author: "Jack Hardwick"
+date: "2024-03-26"
+output: html_document
+---
+
+The following determines key metrics used in the manuscript.
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+# Load config file storing paths and experiment-specific variables
+## Read config file where paths are defined
+config <- read.table("config.txt", 
+                     sep="=", 
+                     comment.char="#", 
+                     col.names=c("key", "value"))
+
+## Convert contents to individual variables
+config_list <- as.list(setNames(config$value, config$key)) %>%
+  list2env(envir = .GlobalEnv)
+```
+
+# Determining duplication rate
+
+Deduplication metrics for the mESC reads of each replicate are found here:
+`{pipeline_directory}/data/splicesAD_mESC_dedup{samplename}_S1_lanes_merged.splicesAD.mESC.dedup_metrics.txt`
+
+Duplication rates are calculated by Picard for each replicate during initial processing. The values in the manuscript exclude all spike-ins to avoid artificially inflating the values (deduplication is done purely on genomic coordinates, and unique reads aligning to small reference sequences are much more likely to coincide by chance). Since read pairing is performed downstream of deduplication, this ensures that corresponding duplicates in splices B & C are removed. This avoids the need for independent deduplication of splices B & C, which would otherwise result in significant data loss (duplicates of the same quality are discarded arbitrarily, so performing deduplication independently on the two sets of splices would make it much less likely to obtain all four corresponding splices from an original read pair).
+```{r}
+dup_rate_JSH9 <- 0.140989
+dup_rate_JSH11 <- 0.102699
+mean_pct_dup_rate <- 100 * (dup_rate_JSH9 + dup_rate_JSH11) / 2
+```
+
+# Determining the frequency of implausible CpG states
+
+CpG states may be miscalled as errors, i.e. implausible sets of methylation calls that don't correspond to possible combinations of C, mC and hmC. These errors are flagged in the initial analysis pipeline. Their total frequency is determined below:
+
+```{r}
+# Import merged CpG-state data from E14 mESCs and spike-ins
+quants_e14 <-
+  read_tsv(paste0(intermed_files, "quants_e14_reps_merged.tsv"))
+quants_spikeins <-
+  read_tsv(paste0(intermed_files, "quants_spikeins_reps_merged.tsv")) %>% select(Chr, CpG_ID, CpG_State, n_merged)
+
+# Combine into single df
+quants_all <- rbind(quants_e14, quants_spikeins)
+
+# Rename columns
+colnames(quants_all) <-
+  c("Chr", "CpG_ID", "CpG_State", "Count")
+
+# Calculate total Counts, i.e. number of unique CpG state calls
+total_counts <- sum(quants_all$Count)
+
+# Filter for errors
+errors <- quants_all %>%
+  filter(CpG_State == "Error") 
+
+# Calculate total error counts
+error_counts <- sum(errors$Count)
+
+# Calculate overall % frequency of errors
+error_freq <- 100 * error_counts / total_counts
+```
+
+# CpG-site metrics
+The following determines the number of CpG sites covered and their average depth
+```{r}
+# Filter E14 data to remove unwanted chromosomes 
+# (e.g. ChrM would artificially inflate depth)
+e14_CpG_sites_depth <- quants_e14 %>%
+  subset(!grepl("chrUn_|random|chrM", Chr)) %>%
+  group_by(Chr, CpG_ID) %>%
+  mutate(depth = sum(n_merged)) %>%
+  select(Chr, CpG_ID, depth) %>%
+  distinct()
+
+unique_CpG_sites_pre_filt <- e14_CpG_sites_depth %>%
+  nrow()
+
+mean_CpG_depth_pre_filt <- mean(e14_CpG_sites_depth$depth)
+median_CpG_depth_pre_filt <- median(e14_CpG_sites_depth$depth)
+```

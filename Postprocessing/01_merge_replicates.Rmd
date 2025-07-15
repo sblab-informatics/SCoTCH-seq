@@ -1,0 +1,76 @@
+---
+title: "1_merge_replicates.rmd"
+author: "Jack Hardwick"
+date: "2024-03-19"
+output: html_document
+---
+
+# Merge replicates
+The following takes quantitative CpG-state data ('quants') — the output of the initial snakemake processing pipeline performed on each replicate — and merges the counts of each CpG state called at each position. 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+
+# Define spike-ins
+spike_ins <- c("H1", "H2", "SQ4mC", "SQ2hmC", "SQC", "pUC19", "Lambda")
+
+## Load config file storing paths and experiment-specific variables
+# Read config file where paths are defined
+config <- read.table("config.txt", 
+                     sep="=", 
+                     comment.char="#", 
+                     col.names=c("key", "value"))
+
+# Convert contents to individual variables
+config_list <- as.list(setNames(config$value, config$key)) %>%
+  list2env(envir = .GlobalEnv)
+```
+
+# Create output folder
+```{bash}
+source config.txt
+mkdir -p $intermed_files
+```
+
+## Merge replicates
+```{r}
+# Load quantitative CpG-state data ('quants') for each replicate
+# (this is the output from the initial snakemake processing pipeline)
+
+# Load quants of each replicate
+quants_rep1 <- read_tsv(paste0(path_quants_rep1, rep1))
+quants_rep2 <- read_tsv(paste0(path_quants_rep2, rep2))
+
+# Merge quants of each replicate,
+# set NA values to zero in 'n' cols
+# (this is important to correctly sum 'n' values of both reps),
+# sum counts ('n' cols from each replicate),
+# then remove 'pct' cols (since % CpG-state levels will be recalculated).
+
+quants_merged <-
+  full_join(quants_rep1, 
+            quants_rep2, 
+            by = c("Chr", "CpG_ID", "CpG_State")) %>%
+  replace_na(replace = list(n.x = 0, n.y = 0)) %>%
+  mutate(n_merged = n.x + n.y) %>%
+  select(Chr, CpG_ID, CpG_State, n.x, n.y, n_merged)
+
+# Rename columns of counts from each replicate with shorthand
+names(quants_merged)[names(quants_merged) == "n.x"] <- 
+  paste0("n.", rep1_sh)
+names(quants_merged)[names(quants_merged) == "n.y"] <- 
+  paste0("n.", rep2_sh)
+
+# Separate spike-ins from E14 data and write to file
+quants_merged %>%
+  filter(Chr %in% spike_ins) %>%
+  write_tsv(paste0(intermed_files, "quants_spikeins_reps_merged.tsv"))
+
+# Separate merged E14 data and write to file
+quants_e14_merged <- 
+  quants_merged %>%
+  filter(!Chr %in% spike_ins) %>%
+  select(Chr, CpG_ID, CpG_State, n_merged) %>%
+  write_tsv(paste0(intermed_files, "quants_e14_reps_merged.tsv"))
+```

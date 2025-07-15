@@ -1,0 +1,276 @@
+---
+title: "global_analysis"
+author: "Jack Hardwick"
+date: "2024-01-08"
+output: html_document
+---
+# The following script determines global levels of CpG states (including error correction).
+
+## Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(viridis)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+library(org.Mm.eg.db)
+# define hmC states
+hmC_states <- c("HC", "CH", "HM", "MH", "HH")
+
+## Load config file storing paths and experiment-specific variables
+# Read config file where paths are defined
+config <- read.table("config.txt", 
+                     sep="=", 
+                     comment.char="#", 
+                     col.names=c("key", "value"))
+
+# Convert contents to individual variables
+config_list <- as.list(setNames(config$value, config$key)) %>%
+  list2env(envir = .GlobalEnv)
+```
+
+## Create output directory
+```{bash}
+source config.txt
+mkdir -p $global_output
+```
+
+## Stats and CpG-state frequencies
+```{r}
+quants_e14_5x_blacklist_filt <-
+  read_tsv(paste0(intermed_files,
+                  "quants_e14_5x_blacklist_filt.bed"))
+
+# Determine number of CpG sites covered after filtering (15,070,500 sites)
+CpG_sites_covered <- n_distinct(quants_e14_5x_blacklist_filt$CpG_ID)
+
+# Determine median depth of CpG sites
+CpG_median_depth <- quants_e14_5x_blacklist_filt %>%
+  dplyr::select(CpG_ID, depth) %>%
+  distinct() %>%
+  reframe(CpG_count = CpG_sites_covered,
+          median_CpG_depth = median(depth),
+          mean_CpG_depth = mean(depth)) %>%
+  write_tsv(paste0(global_output,
+                   "quants_e14_5x_blacklist_filt_stats.tsv"))
+
+CpG_state_frequency <- quants_e14_5x_blacklist_filt %>%
+  group_by(CpG_State) %>%
+  reframe(sum_count = sum(Count)) %>%
+  mutate(CpG_State_freq = 100 * sum_count / sum(sum_count),
+         contains_hmC = case_when(CpG_State %in% hmC_states ~ TRUE,
+                                  TRUE ~ FALSE),
+         grouped_CpG_State = case_when(CpG_State == "HC" |
+                                         CpG_State == "CH" ~ "HC/CH",
+                                       CpG_State == "HM" |
+                                         CpG_State == "MH" ~ "HM/MH",
+                                       CpG_State == "MC" |
+                                         CpG_State == "CM" ~ "MC/CM",
+                                       TRUE ~ CpG_State)) %>%
+  group_by(grouped_CpG_State) %>%
+  mutate(grouped_CpG_State_freq = sum(CpG_State_freq)) %>%
+  ungroup() %>%
+  write_tsv(paste0(global_output,
+                   "CpG_state_frequency.tsv"))
+
+total_hmC_state_freq <-
+  CpG_state_frequency %>%
+  group_by(contains_hmC) %>%
+  reframe(test = sum(CpG_State_freq)) %>%
+  write_tsv(paste0(global_output,
+                   "total_hmC_state_frequency.tsv"))
+```
+
+## Error-correcting global frequencies
+```{r}
+# Import call-rate data
+call_rate_import <- read_tsv(paste0(call_rate_output,
+                                    "final_grouped_call_rates_reps_merged.tsv"))
+
+# Reshape data
+call_rate_reshape <- pivot_wider(call_rate_import,
+                    names_from = ground_truth,
+                    values_from = grouped_call_rate)
+
+# Remove unwanted column
+call_rate_matrix <- call_rate_reshape[, 2:10] 
+
+# Convert strings from character to numeric and convert to matrix
+call_rate_matrix <- type.convert(call_rate_matrix, as.is = TRUE) %>%
+  as.matrix()
+
+# Import observed global CpG-state frequencies
+obs_CpGstate_freq_import <- read_tsv(paste0(global_output,
+                        "CpG_state_frequency.tsv"))
+
+obs_CpGstate_freq <- obs_CpGstate_freq_import %>%
+  dplyr::select(CpG_State, CpG_State_freq)
+
+obs_CpGstate_freq_reshape <- pivot_wider(obs_CpGstate_freq,
+                        names_from = CpG_State,
+                        values_from = CpG_State_freq)
+
+obs_CpGstate_mat <- as.matrix(t(obs_CpGstate_freq_reshape))
+
+
+# Check sorting names
+names(obs_CpGstate_freq_reshape)
+# > names(obs_CpGstate_freq_reshape)
+# [1] "CC" "CH" "CM" "HC" "HH" "HM" "MC" "MH" "MM"
+
+colnames(call_rate_matrix)
+# > colnames(call_rate_matrix)
+# [1] "CC" "CH" "CM" "HC" "HH" "HM" "MC" "MH" "MM"
+
+# Solve linear equations
+T <- solve(call_rate_matrix,obs_CpGstate_mat)
+
+# Compile df of observed global CpG-state frequencies vs error corrected
+observed_vs_error_corr <- cbind(call_rate_reshape[, 1], obs_CpGstate_mat, T*100) %>%
+  as_tibble()
+colnames(observed_vs_error_corr) <- c("CpG_State", "obs", "error_corr")
+
+observed_vs_error_corr
+# CpG_State    obs error_corr
+#  <chr>      <dbl>      <dbl>
+# 1 CC        21.7       21.6  
+# 2 CH         1.99       1.84 
+# 3 CM         6.79       6.31 
+# 4 HC         1.99       1.84 
+# 5 HH         0.376      0.121
+# 6 HM         1.79       1.00 
+# 7 MC         6.86       6.38 
+# 8 MH         1.80       1.02 
+# 9 MM        56.7       59.8  
+
+# Sanity check:
+# > sum(CpG_state_frequency$error_corr)
+# [1] 100
+
+# > sum(CpG_state_frequency$obs)
+# [1] 100
+
+# Add additional info
+observed_vs_error_corr <- obs_CpGstate_freq_import %>% 
+  dplyr::select(CpG_State, grouped_CpG_State, contains_hmC) %>%
+  right_join(observed_vs_error_corr)
+
+# Set any negative values to zero
+observed_vs_error_corr <- observed_vs_error_corr %>%
+  mutate(error_corr_zero = case_when(
+    error_corr < 0 ~ 0,
+    TRUE ~ error_corr
+  ))
+
+# Compute % for corresponding asymmetric CpG states
+observed_vs_error_corr <- observed_vs_error_corr %>%
+  group_by(grouped_CpG_State) %>%
+  mutate(obs_grouped_pct = sum(obs),
+         error_corr_grouped_pct = sum(error_corr_zero))
+
+# Write to file
+write_tsv(observed_vs_error_corr, file = paste0(global_output,
+                 "CpG_state_freq_observed_vs_error_corrected.tsv"))
+```
+
+## Plots of CpG-state frequencies
+```{r}
+# Load data from last chunk and filter for error-corrected levels
+CpG_state_frequency <-
+  read_tsv(paste0(global_output,
+                  "CpG_state_freq_observed_vs_error_corrected.tsv"))
+
+# Prepare data for bar plot:
+# grouping states by MM, CC, hemimethylated, and hmC-containing
+CpG_state_frequency_plot_data <-
+  CpG_state_frequency %>%
+  group_by(contains_hmC) %>%
+  mutate(subplot_CpG_State = case_when(contains_hmC == TRUE ~ "hmC states",
+                                       TRUE ~ CpG_State),
+         subplot_pct = case_when(contains_hmC == TRUE ~ sum(error_corr),
+                                 TRUE ~ error_corr),
+         plot_CpG_State = case_when(grouped_CpG_State == "MC/CM" ~ "MC/CM",
+                                    TRUE ~ subplot_CpG_State)) %>%
+  dplyr::select(plot_CpG_State, subplot_CpG_State, subplot_pct) %>%
+  unique() %>%
+  group_by(plot_CpG_State) %>%
+  mutate(plot_pct = sum(subplot_pct))
+
+# Order factors for plot
+CpG_state_frequency_plot_data$plot_CpG_State <-
+  reorder(CpG_state_frequency_plot_data$plot_CpG_State,
+          CpG_state_frequency_plot_data$plot_pct)
+CpG_state_frequency_plot_data$subplot_CpG_State <-
+  factor(CpG_state_frequency_plot_data$subplot_CpG_State,
+         levels = c("MM", "CC", "MC", "CM", "hmC states"))
+
+# Write data to file
+CpG_state_frequency_plot_data %>%
+  write_tsv(paste0(global_output,
+                   "CpG_state_frequency_plot_data.tsv"))
+
+# Barplot of CpG state frequencies
+CpG_state_frequency_plot <- CpG_state_frequency_plot_data %>%
+  ggplot(aes(x = plot_CpG_State,
+             y = subplot_pct,
+             fill = subplot_CpG_State)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_d() +
+  scale_y_continuous(position = "right", breaks = seq(0, 65, by = 10), expand = c(0, 1)) +
+  theme(panel.background = element_blank()) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(axis.line = element_line(colour = "black", linewidth = 0.2)) +
+  theme(aspect.ratio = 1 / 2) +
+  theme(legend.position = "none") +
+  xlab("CpG state") +
+  ylab("% of all CpG states called")
+
+ggsave(CpG_state_frequency_plot,
+       file = paste0(global_output,
+                     "CpG_state_frequency_plot.pdf"))
+
+# Prepare data for hmC pie chart:
+# filter for hmC states and determine relative pct abundance of each
+hmC_state_data <- CpG_state_frequency %>%
+  filter(contains_hmC == TRUE) %>%
+  mutate(pct_of_hmC_states = 100 * error_corr / sum(error_corr)) %>%
+  dplyr::select(CpG_State,
+                error_corr,
+                error_corr_zero,
+                pct_of_hmC_states,
+                grouped_CpG_State,
+                error_corr_grouped_pct)
+
+# Order factors for plot
+hmC_state_data$CpG_State <- factor(hmC_state_data$CpG_State,
+                                   levels = c("HC", "CH", "HM", "MH", "HH"))
+hmC_state_data$grouped_CpG_State <- factor(hmC_state_data$grouped_CpG_State,
+                                           levels = c("HH", "HM/MH", "HC/CH"))
+
+# Write data to file
+hmC_state_data %>%
+  write_tsv(paste0(global_output,
+                   "hmC_state_data.tsv"))
+
+# Plot levels of hmC states
+hmC_state_plot <-
+  hmC_state_data %>%
+  ggplot(aes(x = grouped_CpG_State, y = error_corr_zero, fill = CpG_State)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_viridis_d() +
+  scale_y_continuous(breaks = seq(0, 4, by = 1), expand = c(0, 0.1)) +
+  theme(panel.background = element_blank()) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank()) +
+  theme(axis.line = element_line(colour = "black", linewidth = 0.2)) +
+  theme(aspect.ratio = 1 / 2) +
+  ylab("% of all CpG states called") +
+  xlab("CpG state")
+
+ggsave(hmC_state_plot,
+       file = paste0(global_output,
+                     "hmC_state_plot.pdf"))
+```
+

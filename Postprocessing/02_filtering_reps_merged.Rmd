@@ -1,0 +1,166 @@
+---
+title: "02_filtering"
+author: "Jack Hardwick"
+date: "2024-03-25"
+output: html_document
+---
+
+# DoubleShot: filtering and binning, and generation of bed, bedgraph and bigwig files
+
+The following script takes the output from the processing pipeline of both replicates (`./data/pipeline_output/CpG_state_quants_*`) and does the following:
+* Removes spike-ins and unwanted chromosomes (e.g. ChrM, chrUn_*)
+* Filters for minimum depth (≥ 5x per CpG site)
+* Error filtering 
+* Blacklist filtering
+* Extract coordinates of each CpG site (after filtering)
+* Count total number of CpG sites (after filtering)
+
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+# define spike-ins
+spike_ins <- c("H1", "H2", "Lambda", "pUC19", "SQ4mC", "SQ2hmC", "SQC")
+# define hmC states
+hmC_states <- c("HC", "CH", "HM", "MH", "HH")
+
+## Load config file storing paths and experiment-specific variables
+# Read config file where paths are defined
+config <- read.table("config.txt", 
+                     sep="=", 
+                     comment.char="#", 
+                     col.names=c("key", "value"))
+
+# Convert contents to individual variables
+config_list <- as.list(setNames(config$value, config$key)) %>%
+  list2env(envir = .GlobalEnv)
+```
+
+### Import data, remove spike-ins and unwanted chromosomes, remove CpG sites with multiple errors or depth < 5
+```{r}
+# Import CpG-state info (raw pipeline output) for each replicate,
+# filtering out unwanted chromosomes.
+
+# Import data and remove unwanted chromosomes
+quants_e14_filt <-
+  read_tsv(paste0(intermed_files, "quants_e14_reps_merged.tsv")) %>%
+  subset(!grepl("chrUn_|random|chrM", Chr))
+
+# Rename columns
+colnames(quants_e14_filt) <-
+  c("Chr", "CpG_ID", "CpG_State", "Count")
+
+# Assign strands to CpG states (needed for some programmes).
+# CC, MM, HH are arbitrarily denoted '+'
+quants_e14_filt <- quants_e14_filt %>%
+  mutate(start = CpG_ID) %>%
+  mutate(end = CpG_ID + 1) %>%
+  mutate(strand = case_when(CpG_State == "MC" ~ "+",
+                            CpG_State == "CM" ~ "-",
+                            CpG_State == "HC" ~ "+",
+                            CpG_State == "CH" ~ "-",
+                            CpG_State == "HM" ~ "+",
+                            CpG_State == "MH" ~ "-",
+                            TRUE ~ "+"))
+
+# Create unique ID for each CpG site by merging chromosome with CpG start coord
+quants_e14_filt$CpG_ID <-
+  paste0(quants_e14_filt$Chr,
+         sep = "_",
+         quants_e14_filt$start)
+
+# Error filtering:
+## Get IDs of mESC CpG sites containing multiple CpG-state calling errors
+CpGs_with_errors <-
+  quants_e14_filt %>%
+  filter(!Chr %in% spike_ins & CpG_State == "Error" & Count > 1) %>%
+  select(CpG_ID)
+
+## Remove any mESC CpG sites with multiple CpG-state errors from the data
+quants_e14_filt <-
+  anti_join(quants_e14_filt,
+            CpGs_with_errors,
+            join_by(CpG_ID))
+
+## Remove errors from filtered data
+quants_e14_filt <-
+  quants_e14_filt %>%
+  filter(CpG_State != "Error")
+
+# Determine depth at each CpG site after error filtering
+CpG_depth <- quants_e14_filt %>%
+  group_by(Chr, CpG_ID) %>%
+  reframe(depth = sum(Count))
+
+# Merge depth with CpG_state_quants
+quants_e14_filt <-
+  left_join(quants_e14_filt, CpG_depth, by = c("Chr", "CpG_ID"))
+
+# Calculate percentage
+quants_e14_filt <-
+  quants_e14_filt %>%
+  mutate(pct = 100 * Count / depth)
+
+# Set minimum depth to 5x and reorder
+quants_e14_filt_depth_over_5x <-
+  quants_e14_filt %>%
+  filter(depth >= 5) %>%
+  dplyr::select(Chr,
+                start,
+                end,
+                CpG_ID,
+                CpG_State,
+                pct,
+                Count,
+                depth,
+                strand) %>%
+  write_tsv(paste0(intermed_files, "quants_e14_filt_5x.bed"))
+```
+
+### Blacklist filtering (cite blacklist source https://doi.org/10.1038/s41598-019-45839-z)
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+# Load config file
+source config.txt
+
+# Change directory
+cd $intermed_files
+
+# Create new file containing column names
+head -n 1 quants_e14_filt_5x.bed > quants_e14_filt_5x_colnames.txt
+
+# Remove CpG sites intersecting with mm10 blacklist and add column names to output
+tail -n +2 quants_e14_filt_5x.bed | bedtools intersect -v -a stdin -b ${misc_files}mm10-blacklist.v2.bed | bedtools sort -i stdin | cat quants_e14_filt_5x_colnames.txt - > quants_e14_5x_blacklist_filt.bed
+
+# Remove unwanted input files
+rm quants_e14_filt_5x.bed 
+rm quants_e14_filt_5x_colnames.txt
+```
+
+### Extract coordinates of CpG sites covered by merged replicates (used for enhancer analysis)
+```{r}
+read_tsv(paste0(intermed_files,
+         "quants_e14_5x_blacklist_filt.bed")) %>%
+  dplyr::select(Chr, start, end) %>%
+  distinct() %>%
+  write_tsv(paste0(intermed_files,
+                   "quants_e14_5x_blacklist_filt_CpG_coords.bed"),
+            col_names = FALSE)
+```
+
+# Count unique E14 CpG sites after filtering
+```{r}
+# Load CpG coordinates
+quants_e14_5x_blacklist_filt_CpG_coords <- 
+  read_tsv(paste0(intermed_files,
+         "quants_e14_5x_blacklist_filt_CpG_coords.bed"),
+         col_names = FALSE) %>%
+  filter(!X1 %in% spike_ins)
+
+# Count
+CpG_count <- quants_e14_5x_blacklist_filt_CpG_coords %>%
+  n_distinct() 
+```

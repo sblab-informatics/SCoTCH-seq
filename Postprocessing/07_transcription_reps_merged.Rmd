@@ -1,0 +1,1200 @@
+---
+title: "transcription"
+output: html_document
+author: "Jack Hardwick"
+date: "2023-12-19"
+---
+
+The following script performs analysis of the relationship between CpG states and transcription, including:
+* Annotating covered CpG sites and integrating them with RNA-seq data
+* Determining average levels of CpG states across different genic features
+* Determining correlation coefficients between different CpG states and transcription
+* Comparing transcription correlation of asymmetric CpG sites, by gene orientation
+* Plotting density distributions of CpG states in genes, by transcript level
+
+## Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ChIPseeker)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+library(org.Mm.eg.db)
+library(magrittr) # For piping into for loop
+library(gridExtra)
+
+# Read config file where paths are defined
+config <- read.table("config.txt", 
+                     sep="=", 
+                     comment.char="#", 
+                     col.names=c("key", "value"))
+
+# Convert contents to individual variables
+config_list <- as.list(setNames(config$value, config$key)) %>%
+  list2env(envir = .GlobalEnv)
+
+```
+
+## Create output folder
+```{bash}
+source config.txt
+mkdir -p $transcript_output
+```
+
+## Format RNA-seq data (from GSE135622)
+```{r}
+# Load RNA transcript data (using path specified above)
+rna_high <-
+  read_tsv(paste0(misc_files, "RNAseqGSE135622.high"))
+
+rna_med <-
+  read_tsv(paste0(misc_files, "RNAseqGSE135622.mid"),
+           col_names = colnames(rna_high))
+
+rna_low <-
+  read_tsv(paste0(misc_files, "RNAseqGSE135622.low"),
+           col_names = colnames(rna_high))
+
+# Combine all
+rna_all <- rbind(rna_high, rna_med, rna_low)
+colnames(rna_all)[1] <- "SYMBOL"
+
+# Calculate mean log2(RPM) and label silent genes
+rna_all <- rna_all %>%
+  mutate(mean_log2rpm = rowMeans(rna_all[, 6:8], na.rm = TRUE),
+         expression_level = case_when(mean_log2rpm <= -2.572358 ~ "silenced"
+         ))
+
+# Filter for genes with non-zero expression level
+rna_all_active <- 
+  rna_all %>% filter(mean_log2rpm > -2.572358)
+
+# Split active genes into 3 quantiles: low, med, high
+breaks <- 
+  quantile(rna_all_active$mean_log2rpm,
+           probs = c(0, 1 / 3, 2 / 3, 1))
+
+rna_all_active$expression_level <-
+  cut(rna_all_active$mean_log2rpm,
+      breaks = breaks,
+      labels = c("low", "medium", "high"),
+      include.lowest = TRUE)
+
+# Merge data
+rna_all_grouped <-
+  rna_all %>%
+  filter(expression_level == "silenced") %>%
+  full_join(rna_all_active)
+
+# Split active genes into groups based on
+# equally spaced intervals of transcriptional output:
+
+## Determine max and min log2RPM
+max_meanlog2RPM <- rna_all_active$mean_log2rpm %>% max()
+min_meanlog2RPM <- rna_all_active$mean_log2rpm %>% min()
+
+## Split active genes (ceiling rounds up max log2RPM to nearest 0.01)
+RPM_breaks <-
+  seq(from = min_meanlog2RPM,
+      to = ceiling(max_meanlog2RPM * 100) / 100,
+      length.out = 4)
+
+rna_all_grouped <-
+  rna_all_grouped %>%
+  mutate(log2RPM_bin = case_when(mean_log2rpm <= -2.572358 ~ "-2.572358",
+                                 TRUE ~ cut(mean_log2rpm,
+                                            RPM_breaks,
+                                            right = FALSE)) %>%
+           as.factor())
+
+# Select desired columns and write to file
+rna_all_grouped <-
+  rna_all_grouped %>%
+  dplyr::select(SYMBOL,
+                Start,
+                End,
+                Orientation,
+                mean_log2rpm,
+                expression_level,
+                log2RPM_bin) %>%
+  write_tsv(paste0(misc_files, "rna_all_grouped.txt"))
+
+## Silent
+rna_all_grouped %>%
+  filter(expression_level == "silenced") %>%
+  dplyr::select(SYMBOL) %>%
+  write_tsv(paste0(transcript_output, "transcript_bin_silent.txt"),
+            col_names = FALSE)
+
+## Low
+rna_all_grouped %>%
+  filter(expression_level == "low") %>%
+  dplyr::select(SYMBOL) %>%
+  write_tsv(paste0(transcript_output, "transcript_bin_low.txt"),
+            col_names = FALSE)
+
+## Medium
+rna_all_grouped %>%
+  filter(expression_level == "medium") %>%
+  dplyr::select(SYMBOL) %>%
+  write_tsv(paste0(transcript_output, "transcript_bin_med.txt"),
+            col_names = FALSE)
+
+## High
+rna_all_grouped %>%
+  filter(expression_level == "high") %>%
+  dplyr::select(SYMBOL) %>%
+  write_tsv(paste0(transcript_output, "transcript_bin_high.txt"),
+            col_names = FALSE)
+
+```
+
+## Annotate covered CpG sites and merge with RNA-seq data
+```{r}
+# Set path to bed file of genomic bin coordinates covered by either replicate
+cpg_coords_both_reps <- paste0(intermed_files, 
+                               "quants_e14_5x_blacklist_filt_CpG_coords.bed")
+
+# Set txdb to mm10
+txdb <-
+  TxDb.Mmusculus.UCSC.mm10.knownGene
+
+# Annotate CpG coords
+anno_cpg_coords <-
+  annotatePeak(cpg_coords_both_reps,
+               tssRegion = c(-1000, 1000),
+               TxDb = txdb, annoDb = "org.Mm.eg.db")
+
+# Convert ChIPseeker output to tibble
+anno_cpg_coords_df <- as_tibble(anno_cpg_coords)
+
+# Remove unneeded object from memory
+rm(anno_cpg_coords)
+
+# Create unique ID for each CpG site
+# (subtracting -1 from start coord to revert to bed-format coords from granges)
+anno_cpg_coords_df <-
+  anno_cpg_coords_df %>%
+  mutate(CpG_ID = paste0(seqnames, "_", (start - 1)))
+
+# Create simple annotation column
+anno_cpg_coords_df <-
+  anno_cpg_coords_df %>%
+  mutate(simple_ann = case_when(
+    grepl("Intron", annotation) ~ "intron",
+    grepl("Exon", annotation) ~ "exon",
+    grepl("Distal Intergenic", annotation) ~ "distal intergenic",
+    grepl("promoter", annotation, ignore.case = TRUE) ~ "promoter",
+    grepl("5' UTR", annotation) ~ "5' UTR",
+    grepl("3' UTR", annotation) ~ "3' UTR"
+  ))
+
+# Remove distal intergenic
+anno_cpg_coords_genic <- anno_cpg_coords_df %>%
+  filter(simple_ann != "distal intergenic") %>%
+  dplyr::select(annotation,
+                simple_ann,
+                geneStart,
+                geneEnd,
+                geneLength,
+                geneStrand,
+                geneId,
+                GENENAME,
+                SYMBOL,
+                distanceToTSS,
+                CpG_ID)
+
+# Remove unneeded object from memory
+rm(anno_cpg_coords_df)
+
+# Write to tsv
+write_tsv(anno_cpg_coords_genic,
+          file = paste0(intermed_files, 
+                        "anno_cpg_coords_genic_merged.txt"))
+
+# Merge with CpG-state data
+annotated_CpG_states <-
+  read_tsv(paste0(intermed_files,
+           "quants_e14_5x_blacklist_filt.bed")) %>%
+  right_join(anno_cpg_coords_genic, by = "CpG_ID")
+
+# Merge with RNA-seq data
+annotated_CpG_states_rna <- 
+  full_join(annotated_CpG_states, rna_all_grouped)
+
+# Write to file
+annotated_CpG_states_rna %>% 
+  write_tsv(paste0(intermed_files, 
+                   "annotated_CpG_states_rna_merged.txt"))
+```
+
+## Deal with duplicate gene names
+A small number of genes have multiple different start and end coordinates. Below, these are differentiated by adding a suffix to gene names to differentiate duplicates and treat them separately. 
+```{r}
+# Load data from previous chunk
+annotated_CpG_states_rna <-
+  read_tsv(paste0(intermed_files,
+                  "annotated_CpG_states_rna_merged.txt"))
+
+# Get list of genes with unique name, start and end coordinates
+annotated_CpG_states_rna_gene_symbols <-
+  annotated_CpG_states_rna %>%
+  dplyr::select(SYMBOL,
+                Start,
+                End,
+                Chr) %>%
+  distinct() %>%
+  na.omit()
+
+colnames(annotated_CpG_states_rna_gene_symbols) <-
+  c("SYMBOL_dup", "Start", "End", "Chr")
+
+# Function to add suffix to symbols of duplicate genes
+# (this avoids downstream errors)
+append_suffix <- function(x) {
+  counts <- table(x)
+  x_count <- ave(x, x, FUN = function(x) seq_along(x))
+  paste(x, ifelse(counts[x] > 1, x_count, ""), sep = " ")
+}
+
+# Apply function to rna-seq data
+annotated_CpG_states_rna_gene_symbols$SYMBOL_dup <-
+  append_suffix(annotated_CpG_states_rna_gene_symbols$SYMBOL_dup)
+
+# Combine with annotated data
+annotated_CpG_states_rna <-
+  inner_join(annotated_CpG_states_rna_gene_symbols,
+             annotated_CpG_states_rna, by = c("Chr", "Start", "End"))
+
+# Write to file
+annotated_CpG_states_rna %>%
+  write_tsv(paste0(intermed_files,
+                   "annotated_CpG_states_rna_merged.txt"))
+```
+
+## Determine mean levels of different CpG states (and grouped asymmetric states) across gene features
+```{r}
+annotated_CpG_states_rna <-
+  read_tsv(paste0(intermed_files,
+                  "annotated_CpG_states_rna_merged.txt"))
+
+# Mark whether first intron/exon (to enable filtering if required)
+annotated_CpG_states_rna <-
+  annotated_CpG_states_rna %>%
+  mutate(intron_exon_1 = case_when(grepl("intron 1", annotation) ~ TRUE,
+                                   grepl("exon 1", annotation) ~ TRUE,
+                                   TRUE ~ FALSE))
+
+# Optional: filter out first intron/exon
+#annotated_CpG_states_rna_1stintronexon <-
+#  annotated_CpG_states_rna %>% filter(intron_exon_1 == TRUE)
+
+# Determine mean CpG-state level for each feature within each gene
+gene_feature_CpG_mean <-
+  annotated_CpG_states_rna %>%
+  group_by(SYMBOL_dup,
+           Orientation,
+           simple_ann) %>%
+  mutate(CpG_count = n_distinct(CpG_ID)) %>%
+  group_by(SYMBOL_dup,
+           Orientation,
+           mean_log2rpm,
+           expression_level,
+           log2RPM_bin,
+           simple_ann,
+           CpG_State) %>%
+  reframe(mean_pct = sum(pct) / CpG_count) %>%
+  distinct()
+
+# Add zero-pct values for missing CpG states
+gene_feature_CpG_mean <-
+  gene_feature_CpG_mean %>%
+  group_by(SYMBOL_dup) %>%
+  complete(simple_ann,
+           CpG_State,
+           fill = list(mean_pct = 0)) %>%
+  group_by(SYMBOL_dup) %>%
+  fill(Orientation,
+       mean_log2rpm,
+       expression_level,
+       log2RPM_bin,
+       .direction = "downup")
+
+# Group corresponding asymmetric CpG states (e.g. CH + HC)
+gene_feature_CpG_mean <-
+  gene_feature_CpG_mean %>%
+  mutate(CpG_state_group =
+         case_when(CpG_State == "HC" | CpG_State == "CH" ~ "HC/CH",
+                   CpG_State == "HM" | CpG_State == "MH" ~ "HM/MH",
+                   CpG_State == "MC" | CpG_State == "CM" ~ "MC/CM",
+                   TRUE ~ CpG_State))
+
+# Sum levels of corresponding asymmetric CpG states (e.g. CH + HC)
+gene_feature_CpG_mean_grouped_levels <-
+  gene_feature_CpG_mean %>%
+  group_by(SYMBOL_dup,
+           simple_ann,
+           CpG_state_group) %>%
+  reframe(grouped_mean_pct = sum(mean_pct))
+
+# Merge grouped percentages with main dataset
+gene_feature_CpG_mean <-
+  left_join(gene_feature_CpG_mean, gene_feature_CpG_mean_grouped_levels)
+```
+
+## Get list of protein-coding genes
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+source config.txt
+cd $misc_files
+
+# The file Mus_musculus.GRCm38.102.gtf.gz was downloaded from:
+# http://nov2020.archive.ensembl.org/Mus_musculus/Info/Index and decompressed.
+
+# Genes were extracted from the file as follows (gtf2bed is from the bedops package):
+
+# First, remove file if it exists to avoid overwriting issue
+rm sorted-mm10.genes.bed
+
+# Then extract genes
+gtf2bed < Mus_musculus.GRCm38.102.gtf | grep -w "gene" > sorted-mm10.genes.bed
+
+# Filter for protein-coding genes then extract gene names and write to file
+cat sorted-mm10.genes.bed | grep -w "protein_coding" | grep 'gene_name' | awk -F'"' '{print $6}' ORS='\n' > prot_cod_gene_list.txt
+```
+
+## Filter data for protein-coding genes
+```{r}
+# Remove white space in gene name
+# (ugly fix to remove space introduced when adding suffix to gene names above)
+gene_feature_CpG_mean$SYMBOL_dup <-
+  gsub("\\s+", "", gene_feature_CpG_mean$SYMBOL_dup)
+
+# Filter data for protein-coding genes
+prot_cod_gene_list <-
+  read_tsv(paste0(misc_files,
+  "prot_cod_gene_list.txt"), col_names = FALSE)
+
+
+gene_feature_CpG_mean_filt <-
+  inner_join(gene_feature_CpG_mean, prot_cod_gene_list,
+             by = c("SYMBOL_dup" = "X1"))
+
+# Write filtered data to file
+gene_feature_CpG_mean_filt %>%
+  write_tsv(paste0(transcript_output,
+                   "gene_feature_CpG_mean_filt_merged.tsv"))
+```
+
+## Spearman's correlation by CpG state and gene feature
+Here, a function is created to determine the Spearman's rank correlation for each combination of grouped CpG state and gene region (promoter, intron, or exon). The data are written to a single file and then extracted into a dataframe. The tabulated results are then written to file.
+```{r}
+# Load data from file
+gene_feature_CpG_mean_filt <-
+  read_tsv(paste0(transcript_output,
+                  "gene_feature_CpG_mean_filt_merged.tsv"))
+
+# Create function to determine Spearman's rank correlation
+# for each combination of grouped CpG state,
+# replicate and gene region (promoter, intron, or exon)
+
+## Define variables for function
+grouped_CpG_states <-
+  c("CC", "MC/CM", "MM", "HC/CH", "HM/MH", "HH")
+
+promoter_intron_exon <-
+  c("promoter", "intron", "exon")
+
+spearman_output_file_path <-
+  paste0(transcript_output, 
+         "spearman_by_CpGstate_merged_region.txt")
+
+## Define function
+spearman_cor <- function(a, b) {
+  spearman <- gene_feature_CpG_mean_filt %>%
+    filter(CpG_state_group %in% a & simple_ann %in% b) %$%
+    cor.test(x = grouped_mean_pct,
+             y = mean_log2rpm,
+             method = "spearman",
+             exact = FALSE)
+  sink(spearman_output_file_path,
+       append = TRUE)
+  print(a)
+  print(b)
+  print(spearman)
+  sink()
+}
+
+# Get numbers of genes included in each set of genic regions for manuscript
+count_genes <- function(data, region){
+  data %>%
+    filter(simple_ann == region) %>%
+    dplyr::select(SYMBOL_dup) %>%
+    unique() %>%
+    nrow()
+}
+
+gene_count_promoters <- count_genes(gene_feature_CpG_mean_filt, "promoter")
+gene_count_introns <- count_genes(gene_feature_CpG_mean_filt, "intron")
+gene_count_exons <- count_genes(gene_feature_CpG_mean_filt, "exon")
+summary_data_for_manuscript <- data.frame(gene_count_promoters, gene_count_introns, gene_count_exons)
+
+write_tsv(summary_data_for_manuscript, file = paste0(transcript_output,
+                 "summary_data_for_manuscript.tsv"), col_names = T)
+
+
+## Remove old output file
+file.remove(spearman_output_file_path)
+
+## Run function
+for (a in grouped_CpG_states) {
+  for (b in promoter_intron_exon) {
+    do(spearman_cor(a, b))
+  }
+}
+
+# Read all lines in output file
+spearman_test <- readLines(spearman_output_file_path)
+
+# Extract CpG state info
+spearman_CpG_state_group <-
+  spearman_test[seq(1, length(spearman_test), by = 12)] %>%
+  str_match('"([^"]+)"')
+
+# Extract replicate info
+spearman_gene_region <-
+  spearman_test[seq(2, length(spearman_test), by = 12)] %>%
+  str_extract("\\S+$")
+
+# Extract Spearman's rho
+spearman_rho <-
+  spearman_test[seq(11, length(spearman_test), by = 12)]
+
+# Extract p value
+spearman_p_val <-
+  spearman_test[seq(7, length(spearman_test), by = 12)] %>%
+  str_extract("\\S+$")
+
+spearman_data <- data.frame(spearman_CpG_state_group,
+                            spearman_gene_region,
+                            spearman_rho,
+                            spearman_p_val)
+
+# Write to file
+write_tsv(spearman_data,
+          file = paste0(transcript_output,
+                        "spearman_data_merged.tsv"))
+```
+
+## Combining multiple CpG states at different genic regions and determining correlation with transcription
+Here, the above function is adapted to determine the Spearman's correlation for each possible combination of grouped CpG state and gene feature.
+```{r}
+# Load data from file
+gene_feature_CpG_mean_filt <-
+  read_tsv(paste0(transcript_output,
+                  "gene_feature_CpG_mean_filt_merged.tsv"))
+
+## Define variables for function
+grouped_CpG_states <-
+  c("CC", "MC/CM", "MM", "HC/CH", "HM/MH", "HH")
+promoter_intron_exon <-
+  c("promoter", "intron", "exon")
+spearman_multistate_output_file_path <-
+  paste0(transcript_output,
+         "spearman_by_CpGstate_replicate_merged_region_multistates.txt")
+
+gene_feature_CpG_mean_filt_multistate <-
+  gene_feature_CpG_mean_filt %>%
+  dplyr::select(SYMBOL_dup,
+                CpG_state_group,
+                grouped_mean_pct,
+                mean_log2rpm,
+                simple_ann)
+
+## Define function
+spearman_cor_multistate <-
+  function(a, b, c, d) {
+    spearman_1 <- gene_feature_CpG_mean_filt_multistate %>%
+      filter(CpG_state_group %in% a & simple_ann %in% b) %>%
+      dplyr::select(SYMBOL_dup,
+                    grouped_mean_pct,
+                    mean_log2rpm) %>%
+      unique()
+    spearman_2 <-
+      gene_feature_CpG_mean_filt_multistate %>%
+      filter(CpG_state_group %in% c & simple_ann %in% d) %>%
+      dplyr::select(SYMBOL_dup,
+                    grouped_mean_pct,
+                    mean_log2rpm) %>%
+      unique()
+    spearman_merge <-
+      inner_join(spearman_1,
+                 spearman_2,
+                 by = c("SYMBOL_dup", "mean_log2rpm")) %>%
+      mutate(multistate = grouped_mean_pct.x * grouped_mean_pct.y) %$%
+      cor.test(x = multistate,
+               y = mean_log2rpm,
+               method = "spearman",
+               exact = FALSE)
+    sink(spearman_multistate_output_file_path, append = TRUE)
+    print(a)
+    print(b)
+    print(c)
+    print(d)
+    print(spearman_merge)
+    sink()
+  }
+
+## Remove old output file
+file.remove(spearman_multistate_output_file_path)
+
+## Run function
+for (a in grouped_CpG_states) {
+  for (b in promoter_intron_exon) {
+    for (c in grouped_CpG_states) {
+      for (d in promoter_intron_exon) {
+        do(spearman_cor_multistate(a, b, c, d))
+      }
+    }
+  }
+}
+
+# Read all lines in output file
+spearman_multistate_output <-
+  readLines(spearman_multistate_output_file_path)
+
+# Extract CpG state info
+spearman_multistate_CpG_state_group1 <-
+  spearman_multistate_output[seq(1,
+                                 length(spearman_multistate_output),
+                                 by = 14)] %>%
+  str_match('"([^"]+)"')
+spearman_multistate_CpG_state_group2 <-
+  spearman_multistate_output[seq(3,
+                                 length(spearman_multistate_output),
+                                 by = 14)] %>%
+  str_match('"([^"]+)"')
+
+# Extract gene region info
+spearman_multistate_gene_region1 <-
+  spearman_multistate_output[seq(2,
+                                 length(spearman_multistate_output),
+                                 by = 14)] %>%
+  str_extract("\\S+$")
+spearman_multistate_gene_region2 <-
+  spearman_multistate_output[seq(4,
+                                 length(spearman_multistate_output),
+                                 by = 14)] %>%
+  str_extract("\\S+$")
+
+# Extract Spearman's rho
+spearman_multistate_rho <-
+  spearman_multistate_output[seq(13,
+                                 length(spearman_multistate_output),
+                                 by = 14)]
+
+# Extract p value
+spearman_multistate_p_val <-
+  spearman_multistate_output[seq(9,
+                                 length(spearman_multistate_output),
+                                 by = 14)] %>%
+  str_extract("\\S+$")
+
+spearman_multistate_data <-
+  data.frame(spearman_multistate_CpG_state_group1,
+             spearman_multistate_CpG_state_group2,
+             spearman_multistate_gene_region1,
+             spearman_multistate_gene_region2,
+             spearman_multistate_rho, spearman_multistate_p_val)
+
+# Write to file
+write_tsv(spearman_multistate_data,
+          file = paste0(transcript_output,
+                        "spearman_multistate_data_merged.tsv"))
+```
+
+## Comparing correlation of asymmetric states and gene orientation
+```{r}
+# Load annotated CpG-state info
+gene_feature_CpG_mean_filt <-
+  read_tsv(paste0(transcript_output,
+                  "gene_feature_CpG_mean_filt_merged.tsv"))
+
+# Count genes covered on minus strand
+count_minus_gene_feature_CpG_mean_filt <- gene_feature_CpG_mean_filt %>%
+  filter(Orientation == "-") %>%
+  dplyr::select(SYMBOL_dup) %>%
+  n_distinct()
+
+# Count genes covered on plus strand
+count_plus_gene_feature_CpG_mean_filt <- gene_feature_CpG_mean_filt %>%
+  filter(Orientation == "+") %>%
+  dplyr::select(SYMBOL_dup) %>%
+  n_distinct()
+
+# Define path for output file
+spearman_asymm_gene_corr_path <-
+  paste0(transcript_output, 
+         "spearman_asymm_gene_corr.txt")
+
+# Define variables
+asymmetric_CpG_states <- c("HC", "CH", "HM", "MH", "MC", "CM")
+gene_orientation <- c("+", "-")
+promoter_intron_exon <-
+  c("promoter", "intron", "exon")
+
+# Create function to filter for CpG states & genes strand-specifically
+fn_spearman_asymm_gene_corr <- 
+  function(a, b, c){
+  spearman_asymm <- gene_feature_CpG_mean_filt %>%
+    filter(CpG_State %in% a & simple_ann %in% b & Orientation %in% c) %$%
+    cor.test(x = mean_pct,
+             y = mean_log2rpm,
+             method = "spearman",
+             exact = FALSE)
+  sink(spearman_asymm_gene_corr_path,
+       append = TRUE)
+  print(a)
+  print(b)
+  print(c)
+  print(spearman_asymm)
+  sink()
+}
+
+## Remove old output file
+file.remove(spearman_asymm_gene_corr_path)
+
+## Run function
+for (a in asymmetric_CpG_states) {
+  for (b in promoter_intron_exon) {
+    for (c in gene_orientation) {
+    do(fn_spearman_asymm_gene_corr(a, b, c))
+    }
+  }
+}
+
+# Read all lines in output file
+spearman_asymm_test <- readLines(spearman_asymm_gene_corr_path)
+
+# Extract CpG state info
+spearman_asymm_CpG_state_group <-
+  spearman_asymm_test[seq(1, length(spearman_asymm_test), by = 13)] %>%
+  str_match('"([^"]+)"')
+
+# Extract gene region info
+spearman_asymm_gene_region <-
+  spearman_asymm_test[seq(2, length(spearman_asymm_test), by = 13)] %>%
+  str_extract("\\S+$")
+
+# Extract gene orientation
+spearman_asymm_gene_orient <-
+  spearman_asymm_test[seq(3, length(spearman_asymm_test), by = 13)] %>%
+  str_extract("\\S+$")
+
+# Extract Spearman's rho
+spearman_asymm_rho <-
+  spearman_asymm_test[seq(12, length(spearman_asymm_test), by = 13)]
+
+# Extract p value
+spearman_asymm_p_val <-
+  spearman_asymm_test[seq(8, length(spearman_asymm_test), by = 13)] %>%
+  str_extract("\\S+$")
+
+# Create dataframe
+spearman_asymm_data <- data.frame(spearman_asymm_CpG_state_group,
+                            spearman_asymm_gene_region,
+                            spearman_asymm_gene_orient,
+                            spearman_asymm_rho,
+                            spearman_asymm_p_val)
+
+# Write to file
+write_tsv(spearman_asymm_data,
+          file = paste0(transcript_output,
+                        "spearman_asymm_data_merged.tsv"))
+```
+
+## Plotting correlation coefficients
+```{r}
+# Load correlation coefficients for individual CpG states
+spearman_data <- read_tsv(paste0(transcript_output,
+                "spearman_data_merged.tsv"))
+
+# Define function for plot  
+spearman_plot <- function(df, x_var, y_var, title = "") {
+  # Create ggplot object
+  p <- ggplot(df, aes_string(x = x_var, y = y_var)) +
+    geom_bar(stat = "identity", width = 0.6) +
+    scale_y_continuous(breaks = seq(-0.5, 0.5, by = 0.1), limits = c(-0.5, 0.5)) +
+    theme_minimal() +
+    ggtitle(title)
+  # Return ggplot object
+  return(p)
+}
+
+# The following is necessary to generate a faceted plot in which
+# each facet contains independently ordered CpG states according to
+# their decreasing Spearman's rho value
+
+# Filter for gene promoters
+spearman_plot_promoters <- spearman_data %>% 
+  filter(spearman_gene_region == 'promoter"') %>%
+  spearman_plot("reorder(X2, -spearman_rho)", "spearman_rho", "Promoters")
+
+# Filter for introns
+spearman_plot_introns <- spearman_data %>% 
+  filter(spearman_gene_region == 'intron"') %>%
+  spearman_plot("reorder(X2, -spearman_rho)", "spearman_rho", "Introns")
+
+# Filter for exons
+spearman_plot_exons <- spearman_data %>% 
+  filter(spearman_gene_region == 'exon"') %>%
+  spearman_plot("reorder(X2, -spearman_rho)", "spearman_rho", "Exons")
+
+# Covert plots to grobs (grid graphical objects) to enable grid arrangement
+g1grob <- ggplotGrob(spearman_plot_promoters)
+g2grob <- ggplotGrob(spearman_plot_introns)
+g3grob <- ggplotGrob(spearman_plot_exons)
+
+# Generate faceted plot with Spearman's rho for each CpG state
+# at promoters, introns & exons & save to pdf
+spearman_plot_full <- grid.arrange(g1grob, g2grob, g3grob, nrow = 1) %>%
+  ggsave(file = paste0(transcript_output,
+                "spearman_plot_full.pdf"),
+         width = 7,
+         height = 4)
+
+
+# Load asymmetric correlation data
+spearman_asymm_data <- 
+  read_tsv(paste0(transcript_output,
+                         "spearman_asymm_data_merged.tsv"),
+           col_names = TRUE)
+
+spearman_asymm_plot <- 
+  spearman_asymm_data %>%
+  ggplot(aes(x = spearman_asymm_gene_orient, y = spearman_asymm_rho, fill = X2)) +
+    geom_bar(stat = "identity", width = 0.6) +
+    scale_y_continuous(breaks = seq(-0.5, 0.5, by = 0.1), limits = c(-0.5, 0.5)) +
+    theme_minimal() +
+    facet_grid(spearman_asymm_gene_region ~ X2) +
+    ggtitle("title")
+
+spearman_asymm_plot %>%
+  ggsave(file = paste0(transcript_output,
+                     "spearman_asymm.pdf"))
+
+
+```
+
+## Plot
+```{r}
+grouped_hmC_states <-
+  c("HC/CH", "HM/MH", "HH")
+grouped_mC_C_states <-
+  c("CC", "MC/CM", "MM")
+intron_exon_promoter <-
+  c("intron", "exon", "promoter")
+intron_exon <-
+  c("intron", "exon")
+
+gene_feature_CpG_mean_filt <-
+  read_tsv(paste0(transcript_output,
+                  "gene_feature_CpG_mean_filt_merged.tsv"))
+
+# Rep 1 hmC at introns: quantile
+plot_hmC_genebody <-
+  gene_feature_CpG_mean_filt %>%
+  filter(CpG_state_group %in% grouped_hmC_states) %>%
+  filter(simple_ann %in% intron_exon) %>%
+  ggplot(aes(x = factor(expression_level,
+                        levels = c("silenced", "low", "medium", "high")),
+             y = grouped_mean_pct,
+             fill = factor(CpG_state_group))) +
+  stat_boxplot(geom = "errorbar", width = 0.3) +
+  geom_violin(size = 0.1,
+              linewidth = 0,
+              position = position_dodge(0.9)) +
+  geom_boxplot(width = 0.5, alpha = 0.3,
+               fill = "white",
+               outlier.shape = NA,
+               position = position_dodge(0.9)) +
+  facet_grid(~ factor(simple_ann,
+                      levels = c("intron", "exon", "promoter")) +
+               factor(CpG_state_group,
+                      levels = c("HC/CH", "HM/MH", "HH"))) +
+  theme_minimal() +
+  labs(fill = "CpG state") +
+  ggtitle("CpG-state levels across regions of protein-coding genes: both replicates combined") +
+  coord_cartesian(ylim = c(0, 10)) +
+  scale_y_continuous(breaks = c(0, 2, 4, 6, 8, 10))
+
+ggsave(plot_hmC_genebody, file = paste0(transcript_output,
+                       "plot_hmC_genebody.pdf"))
+
+# Function to count genes included in each grouping for plot of hmC at gene bodies
+fn_plot_hmC_genebody_n_value <-
+  function(data, expr_lev){
+  data %>%
+      filter(CpG_state_group %in% grouped_hmC_states) %>%
+      filter(simple_ann %in% intron_exon) %>% 
+      filter(expression_level == expr_lev) %>%
+      dplyr::select(SYMBOL_dup) %>%
+      unique() %>%
+      nrow()
+  }
+
+# Count the genes in each category of the plot
+plot_hmC_genebody_n_silenced <- fn_plot_hmC_genebody_n_value(gene_feature_CpG_mean_filt, "silenced")
+plot_hmC_genebody_n_low <- fn_plot_hmC_genebody_n_value(gene_feature_CpG_mean_filt, "low")
+plot_hmC_genebody_n_medium <- fn_plot_hmC_genebody_n_value(gene_feature_CpG_mean_filt, "medium")
+plot_hmC_genebody_n_high <- fn_plot_hmC_genebody_n_value(gene_feature_CpG_mean_filt, "high")
+
+# Combine into df and write to file
+plot_hmC_genebody_n_all <- data.frame(plot_hmC_genebody_n_silenced, 
+                                      plot_hmC_genebody_n_low,
+                                      plot_hmC_genebody_n_medium,
+                                      plot_hmC_genebody_n_high) %>%
+  write_tsv(file = paste0(transcript_output,
+                          "plot_hmC_genebody_n_all.tsv"))
+
+# Rep 1 hmC: transcipt bin
+gene_feature_CpG_mean_filt %>%
+  filter(CpG_state_group %in% grouped_hmC_states) %>%
+  filter(simple_ann %in% intron_exon_promoter) %>%
+  ggplot(aes(x = log2RPM_bin,
+             y = grouped_mean_pct,
+             fill = factor(CpG_state_group))) +
+  geom_violin(size = 0.1,
+              linewidth = 0,
+              position = position_dodge(0.9)) +
+  geom_boxplot(width = 0.5,
+               alpha = 0.3,
+               fill = "white",
+               outlier.shape = NA,
+               position = position_dodge(0.9)) +
+  facet_grid(~ factor(simple_ann,
+                      levels = c("intron", "exon", "promoter")) +
+               factor(CpG_state_group, levels = c("HC/CH", "HM/MH", "HH"))) +
+  theme_minimal() +
+  labs(fill = "CpG state") +
+  ggtitle("CpG-state levels across regions of protein-coding genes: JSH9") +
+  coord_cartesian(ylim = c(0, 10)) +
+  scale_y_continuous(breaks = c(0, 2, 4, 6, 8, 10))
+
+# Rep 1 mC/C
+gene_feature_CpG_mean_filt_binned %>%
+  filter(CpG_state_group %in% grouped_mC_C_states) %>%
+  filter(simple_ann %in% intron_exon_promoter) %>%
+  filter(replicate == 1) %>%
+  ggplot(aes(x = log2RPM_bin,
+             y = grouped_mean_pct,
+             fill = factor(CpG_state_group))) +
+  geom_violin(size = 0.1,
+              linewidth = 0,
+              position = position_dodge(0.9)) +
+  geom_boxplot(width = 0.5,
+               alpha = 0.3,
+               fill = "white",
+               outlier.shape = NA,
+               position = position_dodge(0.9)) +
+  facet_grid(~ factor(simple_ann,
+                      levels = c("intron", "exon", "promoter")) +
+               factor(CpG_state_group,
+                      levels = c("CC", "MM", "MC/CM"))) +
+  theme_minimal() +
+  labs(fill = "CpG state") +
+  ggtitle("CpG-state levels across regions of protein-coding genes: JSH9") +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_y_continuous(breaks = c(0, 20, 40, 60, 80, 100))
+
+# Both replicates hmC
+gene_feature_CpG_mean_filt %>%
+  filter(CpG_state_group %in% grouped_hmC_states) %>%
+  filter(simple_ann %in% intron_exon_promoter) %>%
+  ggplot(aes(x = log2RPM_bin,
+             y = grouped_mean_pct,
+             fill = factor(CpG_state_group))) +
+  geom_violin(size = 0.1, linewidth = 0, position = position_dodge(0.9)) +
+  geom_boxplot(width = 0.5,
+               alpha = 0.3,
+               fill = "white",
+               outlier.shape = NA,
+               position = position_dodge(0.9)) +
+  facet_grid(~ factor(simple_ann,
+                      levels = c("intron", "exon", "promoter")) +
+               factor(CpG_state_group,
+                      levels = c("HC/CH", "HM/MH", "HH"))) +
+  theme_minimal() +
+  labs(fill = "CpG state") +
+  ggtitle("CpG-state levels across regions of protein-coding genes:
+           both replicates") +
+  coord_cartesian(ylim = c(0, 10)) +
+  scale_y_continuous(breaks = c(0, 2, 4, 6, 8, 10))
+
+# Both replicates mC/C
+gene_feature_CpG_mean_filt %>%
+  filter(CpG_state_group %in% grouped_mC_C_states) %>%
+  filter(simple_ann %in% intron_exon_promoter) %>%
+  ggplot(aes(x = log2RPM_bin,
+             y = grouped_mean_pct,
+             fill = factor(CpG_state_group))) +
+  geom_violin(size = 0.1,
+              linewidth = 0,
+              position = position_dodge(0.9)) +
+  geom_boxplot(width = 0.5,
+               alpha = 0.3,
+               fill = "white",
+               outlier.shape = NA,
+               position = position_dodge(0.9)) +
+  facet_grid(~ factor(simple_ann,
+                      levels = c("intron", "exon", "promoter")) +
+               factor(CpG_state_group,
+                      levels = c("CC", "MM", "MC/CM"))) +
+  theme_minimal() +
+  labs(fill = "CpG state") +
+  ggtitle("CpG-state levels across regions of protein-coding genes:
+           both replicates") +
+  coord_cartesian(ylim = c(0, 100)) +
+  scale_y_continuous(breaks = c(0, 20, 40, 60, 80, 100))
+```
+
+## Prepare bed files of genes by transcript level
+```{r}
+# Import gtf file (downloaded from http://nov2020.archive.ensembl.org/Mus_musculus/Info/Index)
+mm10_gtf <-
+  rtracklayer::import(paste0(misc_files,
+                             "Mus_musculus.GRCm38.102.gtf"))
+
+# Convert to dataframe
+mm10_gtf_df <- as.data.frame(mm10_gtf)
+
+# Filter for all genes
+mm10_gtf_genes_all <-
+  mm10_gtf_df %>%
+  filter(type == "gene") %>%
+  dplyr::select(seqnames,
+                start,
+                end,
+                width,
+                score,
+                strand,
+                gene_name,
+                gene_id,
+                gene_version,
+                gene_biotype)
+
+# Filter for protein-coding genes and restructure bed file,
+# putting strand in 6th column
+# (important for Deeptools to detect gene orientation)
+mm10_gtf_genes_prot_cod <-
+  mm10_gtf_genes_all %>%
+  filter(gene_biotype == "protein_coding") %>%
+  dplyr::select(seqnames,
+                start,
+                end,
+                width,
+                score,
+                strand,
+                gene_name,
+                gene_id,
+                gene_version,
+                gene_biotype)
+
+# Import gene names by expression level...
+
+# Highly expressed
+genes_expr_high <-
+  read_tsv(paste0(transcript_output,
+                  "transcript_bin_high.txt"),
+           col_names = FALSE)
+
+# Medium
+genes_expr_med <-
+  read_tsv(paste0(transcript_output,
+                  "transcript_bin_med.txt"),
+           col_names = FALSE)
+
+# Low
+genes_expr_low <-
+  read_tsv(paste0(transcript_output,
+                  "transcript_bin_low.txt"),
+           col_names = FALSE)
+
+# Silent
+genes_expr_silent <-
+  read_tsv(paste0(transcript_output,
+                  "transcript_bin_silent.txt"),
+           col_names = FALSE)
+
+# Group protein-coding genes by expression level and write to bed file
+mm10_prot_cod_genes_expr_high <-
+  inner_join(mm10_gtf_genes_prot_cod,
+             genes_expr_high,
+             by = c("gene_name" = "X1")) %>%
+  write_tsv(paste0(transcript_output,
+                   "mm10_prot_cod_genes_expr_high.bed"),
+            col_names = FALSE)
+
+mm10_prot_cod_genes_expr_med <-
+  inner_join(mm10_gtf_genes_prot_cod,
+             genes_expr_med,
+             by = c("gene_name" = "X1")) %>%
+  write_tsv(paste0(transcript_output,
+                   "mm10_prot_cod_genes_expr_med.bed"),
+            col_names = FALSE)
+
+mm10_prot_cod_genes_expr_low <-
+  inner_join(mm10_gtf_genes_prot_cod,
+             genes_expr_low,
+             by = c("gene_name" = "X1")) %>%
+  write_tsv(paste0(transcript_output,
+                   "mm10_prot_cod_genes_expr_low.bed"),
+            col_names = FALSE)
+
+mm10_prot_cod_genes_expr_silent <-
+  inner_join(mm10_gtf_genes_prot_cod,
+             genes_expr_silent,
+             by = c("gene_name" = "X1")) %>%
+  write_tsv(paste0(transcript_output,
+                   "mm10_prot_cod_genes_expr_silent.bed"),
+            col_names = FALSE)
+```
+
+## Compute gene-body matrices in DeepTools
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+source config.txt
+
+mkdir -p ${transcript_output}deeptools_matrices_merged
+
+cd ${binned_data}bigwig_merged
+
+# Protein coding genes by transcript bin, for all CpG states
+for file in *.bw; do
+  computeMatrix scale-regions -p 8 \
+                --binSize 100 \
+                -S $file \
+                -R ${transcript_output}mm10_prot_cod_genes_expr_*.bed \
+                --upstream 2000 --regionBodyLength 5000 --downstream 1000  \
+                --skipZeros \
+                -o ${transcript_output}deeptools_matrices_merged/${file%%.bw}.CpG.genebody.prot.cod.sortedmatrix.mat.gz
+done
+```
+
+## Plot peak profiles
+```{zsh engine.opts='-i'}
+conda activate doubleshot
+
+source config.txt
+
+mkdir -p ${transcript_output}deeptools_plots_merged
+
+cd ${transcript_output}deeptools_matrices_merged
+
+# Plot for hmC states
+for file in H*grouped*genebody*.mat.gz HH*genebody*.mat.gz; do
+  plotProfile -m $file \
+              -out ${transcript_output}deeptools_plots_merged/${file%%.sortedmatrix*}.plotprofile.pdf \
+              --numPlotsPerRow 1 \
+              --plotWidth 8 \
+              --yMin 0 \
+              --yMax 6.9 \
+              --colors "#453781" "#3cbb75" "#287d8e" "#dce319" \
+              --plotTitle "CpG state level at gene bodies, protein-coding genes - reps merged"
+done
+
+# Plot for other states
+for file in CC*genebody*.mat.gz MM*genebody*.mat.gz M*grouped*genebody*.mat.gz; do
+  plotProfile -m $file \
+              -out ${transcript_output}deeptools_plots_merged/${file%%.sortedmatrix*}.plotprofile.pdf \
+              --numPlotsPerRow 1 \
+              --plotWidth 8 \
+              --yMin 0 \
+              --colors "#453781" "#3cbb75" "#287d8e" "#dce319" \
+              --plotTitle "CpG state level at gene bodies, protein-coding genes - reps merged"
+done
+```
+
+## Compute matrix at TSS and TES
+```{zsh engine.opts='-i', include=FALSE}
+conda activate doubleshot
+
+source config.txt
+
+mkdir -p ${transcript_output}deeptools_plots_merged
+
+cd ${binned_data}bigwig_merged
+
+for file in *.bw; do
+  computeMatrix reference-point -p 8 \
+                -S $file \
+                -R ${transcript_output}mm10_prot_cod_genes_expr_*.bed \
+                --referencePoint TSS \
+                -a 6000 -b 6000 \
+                -o ${transcript_output}deeptools_matrices_merged/${file%%.bw}.TSS.prot.cod.sortedmatrix.mat.gz
+done
+
+for file in *.bw; do
+  computeMatrix reference-point -p 8 \
+                -S $file \
+                -R ${transcript_output}mm10_prot_cod_genes_expr_*.bed \
+                --referencePoint TES \
+                -a 6000 -b 6000 \
+                -o ${transcript_output}deeptools_matrices_merged/${file%%.bw}.TES.prot.cod.sortedmatrix.mat.gz
+done
+
+cd ${transcript_output}deeptools_matrices_merged
+
+# TSS: grouped hmC states
+for file in H*grouped*TSS*.mat.gz HH*TSS*.mat.gz; do
+  plotProfile -m $file \
+              -out ${transcript_output}deeptools_plots_merged/${file%%.sortedmatrix*}.plotprofile.pdf \
+              --numPlotsPerRow 1 \
+              --plotWidth 6 \
+              --yMin 0 \
+              --yMax 6.9 \
+              --colors "#453781" "#3cbb75" "#287d8e" "#dce319" \
+              --plotTitle "CpG state level at TSS, protein-coding genes - reps merged" \
+              --legendLocation lower-right
+done
+
+# TSS: grouped other states
+for file in CC*TSS*.mat.gz MM*TSS*.mat.gz MC*grouped*TSS*.mat.gz; do
+  plotProfile -m $file \
+              -out ${transcript_output}deeptools_plots_merged/${file%%.sortedmatrix*}.plotprofile.pdf \
+              --numPlotsPerRow 1 \
+              --plotWidth 6 \
+              --yMin 0 \
+              --colors "#453781" "#3cbb75" "#287d8e" "#dce319" \
+              --plotTitle "CpG state level at TSS, protein-coding genes - reps merged" \
+              --legendLocation lower-right
+done
+
+# TES: grouped hmC states
+for file in H*grouped*TES*.mat.gz HH*TES*.mat.gz; do
+  plotProfile -m $file \
+              -out ${transcript_output}deeptools_plots_merged/${file%%.sortedmatrix*}.plotprofile.pdf \
+              --numPlotsPerRow 1 \
+              --plotWidth 6 \
+              --yMin 0 \
+              --yMax 6.9 \
+              --colors "#453781" "#3cbb75" "#287d8e" "#dce319" \
+              --plotTitle "CpG state level at TES, protein-coding genes - reps merged" \
+              --legendLocation lower-right
+done
+
+# TES: grouped other states
+for file in CC*TES*.mat.gz MM*TES*.mat.gz MC*grouped*TES*.mat.gz; do
+  plotProfile -m $file \
+              -out ${transcript_output}deeptools_plots_merged/${file%%.sortedmatrix*}.plotprofile.pdf \
+              --numPlotsPerRow 1 \
+              --plotWidth 6 \
+              --yMin 0 \
+              --colors "#453781" "#3cbb75" "#287d8e" "#dce319" \
+              --plotTitle "CpG state level at TES, protein-coding genes - reps merged" \
+              --legendLocation lower-right
+done
+```
+
+
+

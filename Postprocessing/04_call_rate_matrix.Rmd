@@ -1,0 +1,331 @@
+---
+title: "call_rate_matrix"
+output: html_document
+date: "2023-11-22"
+---
+# The following script generates the call-rate (confusion) matrices for individual and merged replicates. 
+
+
+## Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(reshape2)
+library(viridis)
+options(scipen = 999)
+
+# Read config file where paths are defined
+config <- read.table("config.txt", 
+                     sep="=", 
+                     comment.char="#", 
+                     col.names=c("key", "value"))
+
+# Convert contents to individual variables
+config_list <- as.list(setNames(config$value, config$key)) %>%
+  list2env(envir = .GlobalEnv)
+```
+
+## Create output directory
+```{bash}
+source config.txt
+mkdir -p $call_rate_output
+```
+
+## Synthetic spike-ins
+```{r}
+# Define synthetic spike-ins
+synth_spike <- c("H1", "H2", "SQ4mC", "SQ2hmC", "SQC")
+
+# Import CpG states from synthetic spike-ins
+all_reps_synth_spike <- 
+  read_tsv(paste0(intermed_files, 
+                  "quants_spikeins_reps_merged.tsv")) %>%
+  filter(Chr %in% synth_spike)
+
+# Separate dataframes by replicate...
+
+# Rep 1 (JSH9)
+JSH9_synth_spike <- all_reps_synth_spike %>%
+  select(Chr, CpG_ID, CpG_State, n.JSH9)
+colnames(JSH9_synth_spike)[4] <- "Count"
+
+# Rep 2 (JSH11)
+JSH11_synth_spike <- all_reps_synth_spike %>%
+  select(Chr, CpG_ID, CpG_State, n.JSH11)
+colnames(JSH11_synth_spike)[4] <- "Count"
+
+# Merged reps
+merged_reps_synth_spike <- all_reps_synth_spike %>%
+  select(Chr, CpG_ID, CpG_State, n_merged)
+colnames(merged_reps_synth_spike)[4] <- "Count"
+
+# Create list of dataframes
+list_all_reps <- list(JSH9_synth_spike, 
+                      JSH11_synth_spike, 
+                      merged_reps_synth_spike)
+
+# Define function for initial processing
+fn_initial_processing <- function(df) {
+  df %>%
+# 1. Remove errors
+    filter(CpG_State != "Error") %>%
+    group_by(Chr, CpG_ID) %>%
+# 2. Calculate depth:
+    mutate(depth = sum(Count)) %>%
+    ungroup() %>%
+# 3. Filter to remove small fraction of probable alignment errors
+    filter(depth > 20) %>%
+# 4. Caclulate percentage of each CpG state called
+# 5. Correct CpG IDs ('NNNN' was added to spike-in references
+#    prior to alignment to resolve issue aligning to short references)
+    mutate(pct_adjust = 100 * Count / depth, CpG_ID = CpG_ID - 4)
+}
+
+# Apply above function to list of df's
+initial_processed_list <- map(list_all_reps, fn_initial_processing)
+
+# Fn to sum percentages (which should add up to 100...)
+fn_sanity_check <- function(df) {
+  df %>%
+    group_by(Chr, CpG_ID) %>%
+    reframe(sum(pct_adjust))
+}
+
+# Apply sanity check to list
+sanity_checked_list <- map(initial_processed_list, fn_sanity_check)
+# Passed check
+
+# Function to add ground truth info to df
+fn_add_ground_truths <- function(df) {
+  df %>%
+    mutate(ground_truth = case_when((Chr == "H1" & CpG_ID == 13) ~ "CC",
+                                  (Chr == "H1" & CpG_ID == 28) ~ "HH",
+                                  (Chr == "H1" & CpG_ID == 44) ~ "CC",
+                                  (Chr == "H1" & CpG_ID == 58) ~ "MM",
+                                  (Chr == "H2" & CpG_ID == 19) ~ "CC",
+                                  (Chr == "H2" & CpG_ID == 23) ~ "HM",
+                                  (Chr == "H2" & CpG_ID == 28) ~ "CC",
+                                  (Chr == "H2" & CpG_ID == 51) ~ "CH",
+                                  (Chr == "H2" & CpG_ID == 60) ~ "CC",
+                                  (Chr == "H2" & CpG_ID == 74) ~ "MC",
+                                  (Chr == "SQ2hmC" & CpG_ID == 22) ~ "HH",
+                                  (Chr == "SQ2hmC" & CpG_ID == 38) ~ "CC",
+                                  (Chr == "SQ2hmC" & CpG_ID == 59) ~ "HC",
+                                  (Chr == "SQ4mC" & CpG_ID == 21) ~ "CM",
+                                  (Chr == "SQ4mC" & CpG_ID == 38) ~ "CC",
+                                  (Chr == "SQ4mC" & CpG_ID == 59) ~ "MC",
+                                  (Chr == "SQ4mC" & CpG_ID == 67) ~ "MM",
+                                  (Chr == "SQC" & CpG_ID == 13) ~ "CC",
+                                  (Chr == "SQC" & CpG_ID == 19) ~ "CC",
+                                  (Chr == "SQC" & CpG_ID == 22) ~ "CC",
+                                  (Chr == "SQC" & CpG_ID == 28) ~ "CC",
+                                  (Chr == "SQC" & CpG_ID == 32) ~ "CC",
+                                  (Chr == "SQC" & CpG_ID == 45) ~ "CC",
+                                  (Chr == "SQC" & CpG_ID == 52) ~ "CC",
+                                  (Chr == "SQC" & CpG_ID == 59) ~ "CC", ))
+}
+
+gt_list <- map(initial_processed_list, fn_add_ground_truths)
+
+# Generate mean of ground truth and CpG-state calls and fill in missing values
+fn_mean_calls <- function(df) {
+  df %>%
+    group_by(ground_truth, CpG_State) %>%
+# 1. Generate mean calls
+    reframe(call_rate = mean(pct_adjust)) %>%
+# 2. Fill in any missing combinations of ground truth & CpG-state calls
+#    (i.e. where ground truth 'x' was never called as CpG-state 'y'),
+#    add zero value:
+    complete(ground_truth, CpG_State) %>%
+    replace_na(list(call_rate = 0))
+}
+# Apply above function to generate mean CpG state calls on list of dataframes
+mean_gt_list <- map(gt_list, fn_mean_calls)
+```
+
+# Accounting for the relative orientation of the ground truth with the reference sequence of synthetic spike-ins
+
+For the synthetic spike-ins, there is no physical distinction at the molecular level between corresponding asymmetric states, e.g. 'MH' and 'HM'. Half the time, the same spike-in will go through the library prep in one orientation, and half the time, in the other:
+
+  Orientation 1 ('HM')       Orientation 2 ('MH')
+  Strand A  5'---HG---3'     Strand B  5'---MG---3'
+  Strand B  3'---GM---5'     Strand A  3'---GH---5'
+  
+The distinction between HM and MH only arises when we create the reference sequence and must assign one strand of a duplex to be the 'plus' strand and the other to be the 'minus'. It is only then that we arbitrarily define whether the ground truth of this CpG site is an 'MH' or 'HM' state. 
+
+Once we have made this arbitrary decision, though, the distinction between HM and MH matters. For example, if we choose HM to be the ground truth, rather than MH, then following correct alignment to the reference and base calling, it will be called as an HM state. If it were called as MH, this would reflect an error and should be counted as such. Furthermore, the HM state may have a different likelihood of being miscalled as HC than CH. This applies to any other asymmetric CpG state, but not to symmetric states: whether we define the ground truth as HM or MH, either state would have the same probability of being called as CC.
+
+Thus, the HM and MH states can't simply be merged together and averaged, as we would not be able to distinguish correct HM calls from false MH calls, or separate the differing likelihood of HM being called as HC vs CH or other asymmetric states. 
+
+In summary, there is no distinction at the molecular level between HM and MH. The distinction only arises with respect to alignment to the reference sequence. Thus, in the analysis below, both of these factors are accounted for; the ground truths are grouped by their two relative orientations w.r.t. the reference sequence (to reflect the arbitrary choice of the plus strand) and averaged accordingly (to reflect the fact that there is no distinction at the molecular level between the states).
+
+```{r}
+# Due to the definition of the plus strand of spike-in 'H2', the MH/MH state
+# ground truth is labelled 'HM' and there is arbitrarily no ground truth for MH.
+# To account for the points above, the MH ground truth must be added.
+# (This was not necessary for any other asymmetric CpG state because both
+# orientations happened to be covered when defining the reference sequences.)
+
+# Add values for MH ground truth:
+## Create vector with replicate names
+## Create df with MH ground truth and CpG-state calls
+MH_ground_truth <-
+  data.frame(rep(c("MH"), times = 9),
+             c("CC", "CM", "MC", "MM", "CH", "HC", "HH", "HM", "MH"),
+             rep(c(NA), times = 9))
+colnames(MH_ground_truth) <- c("ground_truth", "CpG_State", "call_rate")
+
+## Define function to merge MH ground truth values with list
+fn_merged_reps_with_MH <- function(df) {
+  full_join(df,
+            MH_ground_truth)  
+}
+# Apply above function to list
+list_with_MH <- map(mean_gt_list, fn_merged_reps_with_MH)
+
+
+# Define function to group ground truths and CpG-state calls
+# by relative orientation to the reference:
+fn_group_by_orient <- function(df) {
+  df %>%
+    mutate(
+         GT_orient = case_when((ground_truth == "MC" |
+                                  ground_truth == "HC" |
+                                  ground_truth == "HM") ~ 1,
+                               (ground_truth == "CM" |
+                                  ground_truth == "CH" |
+                                  ground_truth == "MH") ~ -1,
+                               (ground_truth == "CC" |
+                                  ground_truth == "MM" |
+                                  ground_truth == "HH") ~ 0),
+         CpG_State_call_orient = case_when((CpG_State == "MC" |
+                                              CpG_State == "HC" |
+                                              CpG_State == "HM") ~ 1,
+                                           (CpG_State == "CM" |
+                                              CpG_State == "CH" |
+                                              CpG_State == "MH") ~ -1,
+                                           (CpG_State == "CC" |
+                                              CpG_State == "MM" |
+                                              CpG_State == "HH") ~ 0),
+         GT_form = case_when((ground_truth == "MC" |
+                                ground_truth == "CM") ~ "MC/CM",
+                             (ground_truth == "HC" |
+                                ground_truth == "CH") ~ "HC/CH",
+                             (ground_truth == "HM" |
+                                ground_truth == "MH") ~ "HM/MH",
+                             TRUE ~ ground_truth),
+         CpG_State_call_form = case_when((CpG_State == "MC" |
+                                            CpG_State == "CM") ~ "MC/CM",
+                                         (CpG_State == "HC" |
+                                            CpG_State == "CH") ~ "HC/CH",
+                                         (CpG_State == "HM" |
+                                            CpG_State == "MH") ~ "HM/MH",
+                                         TRUE ~ CpG_State),
+         group = abs(GT_orient + CpG_State_call_orient))
+}
+
+# Apply above function to list of dataframes
+list_group_by_orient <- map(list_with_MH, fn_group_by_orient)
+
+
+# Fn to determine call rates for grouped data, omitting MH to avoid NA values  
+fn_group_call_rates <- function(df) {
+  df %>%
+    filter(ground_truth != "MH") %>%
+    group_by(GT_form, CpG_State_call_form, group) %>%
+    reframe(grouped_call_rate = mean(call_rate))
+}
+# Apply fn to list of dataframes
+list_grouped_call_rates <- map(list_group_by_orient, fn_group_call_rates)
+    
+# Fn to merge grouped data with MH
+fn_grouped_call_rates_all_ground_truth <- function(df1, df2) {
+  left_join(df1, df2)
+}
+
+# Apply above fn
+list_group_call_rates_all_gt <- Map(fn_grouped_call_rates_all_ground_truth, list_group_by_orient, list_grouped_call_rates)
+
+
+# Fn to calculate mean ground truth -- CpG state combinations
+fn_mean_grouped_call_rate <- function(df) {
+  df %>%
+    group_by(ground_truth, CpG_State) %>%
+    reframe(grouped_call_rate = mean(grouped_call_rate))
+}
+
+# Apply fn to list
+list_final_grouped_call_rates <- map(list_group_call_rates_all_gt, fn_mean_grouped_call_rate)
+
+
+# Write call-rate data to file
+
+## Rep 1 (JSH9):
+final_grouped_call_rates_JSH9 <- list_final_grouped_call_rates[[1]] %>%
+  write_tsv(paste0(call_rate_output, 
+                   "final_grouped_call_rates_JSH9.tsv"))
+
+## Rep 2 (JSH11)
+final_grouped_call_rates_JSH11 <- list_final_grouped_call_rates[[2]] %>%
+  write_tsv(paste0(call_rate_output, 
+                   "final_grouped_call_rates_JSH11.tsv"))
+
+## Reps merged 
+final_grouped_call_rates_reps_merged <- list_final_grouped_call_rates[[3]] %>%
+  write_tsv(paste0(call_rate_output, 
+                   "final_grouped_call_rates_reps_merged.tsv"))
+```
+
+# Plots: call rate matrices
+```{r}
+## Specify order of CpG states
+CpG_state_order <- c("CC", "MC", "CM", "MM", "HC", "CH", "HM", "MH", "HH")
+
+# Fn to create call-rate matrix plot
+fn_call_rate_matrix_plot <- function(df) {
+  df %>%
+    ggplot(aes(ground_truth, CpG_State, fill = grouped_call_rate)) +
+    geom_tile() +
+    theme_minimal(base_size = 10) +
+    theme(legend.position = "none") +
+    scale_fill_viridis(begin = 0.5, end = 1, alpha = 1) +
+  #  scale_fill_gradient(low = "white", high = "blue") +
+    scale_x_discrete(position = "top", limits = CpG_state_order) +
+    scale_y_discrete(limits = rev(CpG_state_order)) +
+    geom_text(aes(label = format(round(grouped_call_rate, digits = 2),
+                               nsmall = 2), vjust = 0.5),
+              size = 3) +
+    xlab("True CpG state:") +
+    ylab("CpG-state called (%)")
+}
+
+call_rate_matrix_rep1_JSH9 <- 
+  fn_call_rate_matrix_plot(final_grouped_call_rates_JSH9) %>%
+  ggsave(filename = paste0(call_rate_output, 
+                "call_rate_matrix_rep1_JSH9.pdf"),
+         width = 4, height = 3.5)
+
+call_rate_matrix_rep2_JSH11 <- 
+  fn_call_rate_matrix_plot(final_grouped_call_rates_JSH11) %>%
+  ggsave(filename = paste0(call_rate_output, 
+                "call_rate_matrix_rep2_JSH11.pdf"),
+         width = 4, height = 3.5)
+
+call_rate_matrix_reps_merged <- 
+  fn_call_rate_matrix_plot(final_grouped_call_rates_reps_merged) %>%
+  ggsave(filename = paste0(call_rate_output, 
+                "call_rate_matrix_reps_merged.pdf"),
+         width = 4, height = 3.5)
+  
+```
+
+# Determining Pearson's correlation between call-rate matrices
+```{r}
+# Note that this was done without averaging corresponding asymmetric CpG states,
+# as this would artificially inflate the correlation coefficient
+
+pearsons_between_reps <-
+  cor.test(list_group_call_rates_all_gt[[1]]$call_rate,
+           list_group_call_rates_all_gt[[2]]$call_rate)
+
+```
