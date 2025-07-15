@@ -1,6 +1,6 @@
 ---
 title: "02_filtering"
-author: "Jack Hardwick"
+author: "Jack Hardwick, Somdutta Dhir, Angela Simeone"
 date: "2024-03-25"
 output: html_document
 ---
