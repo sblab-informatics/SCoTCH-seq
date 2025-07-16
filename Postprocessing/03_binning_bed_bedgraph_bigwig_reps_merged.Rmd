@@ -1,6 +1,6 @@
 ---
 title: "filtering_binning_bed_bedgraph_bigwig"
-author: "Jack Hardwick"
+author: "Jack Hardwick, Somdutta Dhir, Angela Simeone"
 output: html_document
 date: "2024-01-05"
 ---
