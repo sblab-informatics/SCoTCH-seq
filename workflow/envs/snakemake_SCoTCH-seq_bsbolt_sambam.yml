@@ -1,4 +1,4 @@
-name: snakemake_doubleshot_bsbolt_sambam
+name: snakemake_SCoTCH-seq_bsbolt_sambam
 channels:
   - cpfarrell
   - conda-forge
