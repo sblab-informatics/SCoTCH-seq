@@ -1,8 +1,8 @@
-name: snakemake_doubleshot_seqkit
+name: snakemake_SCoTCH-seq_seqkit
 channels:
   - conda-forge
   - bioconda
   - defaults
 dependencies:
   - seqkit=2.7.0=h9ee0642_0
-prefix: /Users/hardwi01/miniconda3/envs/snakemake_doubleshot_seqkit
+prefix: /Users/hardwi01/miniconda3/envs/snakemake_SCoTCH-seq_seqkit
