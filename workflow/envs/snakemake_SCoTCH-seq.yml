@@ -1,4 +1,4 @@
-name: snakemake_doubleshot
+name: snakemake_SCoTCH-seq
 channels:
   - conda-forge
   - bioconda
