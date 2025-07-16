@@ -1,6 +1,6 @@
 ---
 title: "global_analysis"
-author: "Jack Hardwick"
+author: "Jack Hardwick, Somdutta Dhir, Angela Simeone"
 date: "2024-01-08"
 output: html_document
 ---
