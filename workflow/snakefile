@@ -15,7 +15,7 @@ rule run_fastqc_raw:
         html_report="reports/fastqc/{sample}_fastqc.html",
         zip_report="reports/fastqc/{sample}_fastqc.zip"
     conda:
-        "envs/snakemake_doubleshot.yml"
+        "envs/snakemake_SCoTCH-seq.yml"
     shell:
         """
         fastqc {input} > {output}
@@ -27,7 +27,7 @@ rule initial_clip_filter_read1:
     output:
         temporary("data/filtered_fastq/{sample}_R1_001.filt.fastq.gz")
     conda:
-        "envs/snakemake_doubleshot.yml"
+        "envs/snakemake_SCoTCH-seq.yml"
     params:
         threads=CUTADAPT_THREADS
     shell:
@@ -43,7 +43,7 @@ rule initial_clip_filter_read2:
     output:
         temporary("data/filtered_fastq/{sample}_R2_001.filt.fastq.gz")
     conda:
-        "envs/snakemake_doubleshot.yml"
+        "envs/snakemake_SCoTCH-seq.yml"
     params:
         threads=CUTADAPT_THREADS
     shell:
@@ -60,7 +60,7 @@ rule run_seqkit_pair_lane1:
         temporary("data/paired_filtered_fastq/{sample}_L001_R1_001.filt.fastq.gz"),
         temporary("data/paired_filtered_fastq/{sample}_L001_R2_001.filt.fastq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         """
         seqkit pair -1 {input[0]} -2 {input[1]} -O data/paired_filtered_fastq/
@@ -74,7 +74,7 @@ rule run_seqkit_pair_lane2:
         temporary("data/paired_filtered_fastq/{sample}_L002_R1_001.filt.fastq.gz"),
         temporary("data/paired_filtered_fastq/{sample}_L002_R2_001.filt.fastq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         """
         seqkit pair -1 {input[0]} -2 {input[1]} -O data/paired_filtered_fastq/
@@ -87,7 +87,7 @@ rule extract_spliceA:
     output:
         temporary("data/splices/{sample}.spliceA.fq.gz")
     conda:
-        "envs/snakemake_doubleshot.yml"
+        "envs/snakemake_SCoTCH-seq.yml"
     params:
         threads=CUTADAPT_THREADS
     shell:
@@ -102,7 +102,7 @@ rule extract_spliceB:
     output:
         temporary("data/splices/{sample}.spliceB.fq.gz")
     conda:
-        "envs/snakemake_doubleshot.yml"
+        "envs/snakemake_SCoTCH-seq.yml"
     params:
         threads=CUTADAPT_THREADS
     shell:
@@ -117,7 +117,7 @@ rule extract_spliceC:
     output:
         temporary("data/splices/{sample}.spliceC.fq.gz")
     conda:
-        "envs/snakemake_doubleshot.yml"
+        "envs/snakemake_SCoTCH-seq.yml"
     params:
         threads=CUTADAPT_THREADS
     shell:
@@ -132,7 +132,7 @@ rule extract_spliceD:
     output:
         temporary("data/splices/{sample}.spliceD.fq.gz")
     conda:
-        "envs/snakemake_doubleshot.yml"
+        "envs/snakemake_SCoTCH-seq.yml"
     params:
         threads=CUTADAPT_THREADS
     shell:
@@ -149,7 +149,7 @@ rule pair_splicesAC_lane1:
         temporary("data/splices_paired/{sample}L001.spliceA.fq.gz"),
         temporary("data/splices_paired/{sample}L001.spliceC.fq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_paired/" 
 
@@ -161,7 +161,7 @@ rule pair_splicesAC_lane2:
         temporary("data/splices_paired/{sample}L002.spliceA.fq.gz"),
         temporary("data/splices_paired/{sample}L002.spliceC.fq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_paired/" 
 
@@ -173,7 +173,7 @@ rule pair_splicesBD_lane1:
         temporary("data/splices_paired/{sample}L001.spliceB.fq.gz"),
         temporary("data/splices_paired/{sample}L001.spliceD.fq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_paired/"
 
@@ -185,7 +185,7 @@ rule pair_splicesBD_lane2:
         temporary("data/splices_paired/{sample}L002.spliceB.fq.gz"),
         temporary("data/splices_paired/{sample}L002.spliceD.fq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_paired/"
 
@@ -195,7 +195,7 @@ rule cleanup_splices:
     output:
         temporary("data/splices_paired_cleanup/{sample}.fq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         "seqkit sana {input} -o {output}"
 
@@ -208,7 +208,7 @@ rule pair_clean_splicesAD_lane1:
         temporary("data/splices_final/{sample}L001.spliceA.fq.gz"),
         temporary("data/splices_final/{sample}L001.spliceD.fq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_final/"
 
@@ -220,7 +220,7 @@ rule pair_clean_splicesAD_lane2:
         temporary("data/splices_final/{sample}L002.spliceA.fq.gz"),
         temporary("data/splices_final/{sample}L002.spliceD.fq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_final/"
 
@@ -233,7 +233,7 @@ rule pair_clean_splicesBC_lane1:
         temporary("data/splices_final/{sample}L001.spliceB.fq.gz"),
         temporary("data/splices_final/{sample}L001.spliceC.fq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_final/"
 
@@ -245,7 +245,7 @@ rule pair_clean_splicesBC_lane2:
         temporary("data/splices_final/{sample}L002.spliceB.fq.gz"),
         temporary("data/splices_final/{sample}L002.spliceC.fq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         "seqkit pair -1 {input[0]} -2 {input[1]} -O data/splices_final/"
 
@@ -256,7 +256,7 @@ rule cleanup_paired_splices:
     output:
         temporary("data/splices_final_clean/{splice}.fq.gz")
     conda:
-        "envs/snakemake_doubleshot_seqkit.yml"
+        "envs/snakemake_SCoTCH-seq_seqkit.yml"
     shell:
         "seqkit sana {input} -o {output}"
 
@@ -270,7 +270,7 @@ rule align_splicesAD_lane1:
     params:
         ref_genome=PATH_TO_REFERENCE_GENOME
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         conda activate base
@@ -288,7 +288,7 @@ rule align_splicesAD_lane2:
     params:
         ref_genome=PATH_TO_REFERENCE_GENOME
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         conda activate base
@@ -306,7 +306,7 @@ rule align_splicesBC_lane1:
     params:
         ref_genome=PATH_TO_REFERENCE_GENOME
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         conda activate base
@@ -324,7 +324,7 @@ rule align_splicesBC_lane2:
     params:
         ref_genome=PATH_TO_REFERENCE_GENOME
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         conda activate base
@@ -340,7 +340,7 @@ rule merge_index_splicesAD:
     output:
         temporary("data/splices_aligned_sorted_merged/{sample}lanes_merged.splicesAD.bam")
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         conda activate base
@@ -355,7 +355,7 @@ rule merge_index_splicesBC:
     output:
         "data/splices_aligned_sorted_merged/{sample}lanes_merged.splicesBC.bam"
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         conda activate base 
@@ -374,7 +374,7 @@ rule isolate_dedup_mESC_reads_splicesAD:
         "data/splicesAD_mESC_dedup/{sample}.splicesAD.mESC.dedup_metrics.txt",
         "data/splicesAD_mESC_dedup/{sample}.splicesAD.mESC.dedup_idxstats.txt"
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         RG=$(basename {input} .bam)
@@ -397,7 +397,7 @@ rule isolate_dedup_pUC19Lambda_reads_splicesAD:
         "data/splicesAD_pUC19Lambda_dedup/{sample}.splicesAD.pUC19Lambda.dedup_metrics.txt",
         "data/splicesAD_pUC19Lambda_dedup/{sample}.splicesAD.pUC19Lambda.dedup_idxstats.txt"
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         RG=$(basename {input[0]} .bam)
@@ -415,7 +415,7 @@ rule isolate_synthspikein_reads_splicesAD:
     output:
         temporary("data/splicesAD_synthspikein/{sample}.splicesAD.synthspikein.bam")
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         cut -f 1 {input[1]} | grep -E 'H1|H2|SQC|SQ4mC|SQ2hmC' | xargs samtools view -1 -b {input[0]} > {output}
@@ -430,7 +430,7 @@ rule merge_deduplicated_data:
         "data/splicesAD_dedup_all/{sample}.splicesAD.dedup.all.bam",
         "data/splicesAD_dedup_all/{sample}.splicesAD.dedup.all_coverage.txt"
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         samtools merge {input[0]} {input[1]} {input[2]} -o {output[0]}
@@ -443,7 +443,7 @@ rule split_paired_bams_spliceA:
     output:
         temporary("data/bam_splices/{sample}.SpliceA.bam"),
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         bamtools filter -isFirstMate true -in {input} -out {output}
@@ -455,7 +455,7 @@ rule split_paired_bams_spliceD:
     output:
         temporary("data/bam_splices/{sample}.SpliceD.bam"),
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         bamtools filter -isSecondMate true -in {input} -out {output}
@@ -467,7 +467,7 @@ rule split_paired_bams_spliceB:
     output:
         temporary("data/bam_splices/{sample}.SpliceB.bam"),
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         bamtools filter -isFirstMate true -in {input} -out {output}
@@ -479,7 +479,7 @@ rule split_paired_bams_spliceC:
     output:
         temporary("data/bam_splices/{sample}.SpliceC.bam"),
     conda:
-        "envs/snakemake_doubleshot_bsbolt_sambam.yml"
+        "envs/snakemake_SCoTCH-seq_bsbolt_sambam.yml"
     shell:
         """
         bamtools filter -isSecondMate true -in {input} -out {output}
