@@ -343,7 +343,7 @@ gene_feature_CpG_mean <-
 
 ## Get list of protein-coding genes
 ```{zsh engine.opts='-i'}
-conda activate doubleshot
+conda activate SCoTCH-seq
 source config.txt
 cd $misc_files
 
@@ -1061,7 +1061,7 @@ mm10_prot_cod_genes_expr_silent <-
 
 ## Compute gene-body matrices in DeepTools
 ```{zsh engine.opts='-i'}
-conda activate doubleshot
+conda activate SCoTCH-seq
 
 source config.txt
 
@@ -1083,7 +1083,7 @@ done
 
 ## Plot peak profiles
 ```{zsh engine.opts='-i'}
-conda activate doubleshot
+conda activate SCoTCH-seq
 
 source config.txt
 
@@ -1117,7 +1117,7 @@ done
 
 ## Compute matrix at TSS and TES
 ```{zsh engine.opts='-i', include=FALSE}
-conda activate doubleshot
+conda activate SCoTCH-seq
 
 source config.txt
 
