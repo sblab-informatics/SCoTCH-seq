@@ -120,7 +120,7 @@ quants_e14_filt_depth_over_5x <-
 
 ### Blacklist filtering (cite blacklist source https://doi.org/10.1038/s41598-019-45839-z)
 ```{zsh engine.opts='-i'}
-conda activate doubleshot
+conda activate SCoTCH-seq
 
 # Load config file
 source config.txt
