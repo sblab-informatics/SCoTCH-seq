@@ -136,7 +136,7 @@ quants_e14_5x_blacklist_filt_binned %>%
 
 ### Binned data: combine all chromosomes and split by CpG state, then generate bedgraph/bigwigs
 ```{zsh engine.opts='-i'}
-conda activate doubleshot
+conda activate SCoTCH-seq
 
 source config.txt
 
@@ -170,7 +170,7 @@ done
 ```
 
 ```{zsh engine.opts='-i'}
-conda activate doubleshot
+conda activate SCoTCH-seq
 
 source config.txt
 
